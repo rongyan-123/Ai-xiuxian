@@ -1,0 +1,401 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "修仙 (Xiuxian) API",
+    "version": "1.0.0",
+    "description": "Versioned API for the Xiuxian cultivation game. All game-turn responses are streamed via SSE with a typed event envelope. Errors use RFC 9457 Problem Details.",
+    "contact": {
+      "name": "Xiuxian API Support"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000/api/v1",
+      "description": "Local development server"
+    }
+  ],
+  "paths": {
+    "/game/action": {
+      "post": {
+        "operationId": "submitGameAction",
+        "summary": "Submit a game action and receive a streaming SSE response",
+        "description": "The primary game interaction endpoint. Accepts a player action and returns a typed SSE event stream. The first event is always `accepted`; the stream ends with exactly one terminal event (`completed`, `failed`, or `cancelled`).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GameActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "SSE event stream. Response is `text/event-stream`. Each event carries a versioned JSON envelope with `protocolVersion`, `requestId`, `runId`, `sequence`, `occurredAt`, `type`, and `payload`.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/SSEEvent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON request body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Player not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Turn conflict or already in progress",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error with issue pointers",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (sanitized)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Dependency timeout",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/live": {
+      "get": {
+        "operationId": "healthLive",
+        "summary": "Liveness check",
+        "description": "Returns 200 if the server process is alive. Does not check any dependencies.",
+        "responses": {
+          "200": {
+            "description": "Server is alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "enum": ["ok"] }
+                  },
+                  "required": ["status"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "healthReady",
+        "summary": "Readiness check",
+        "description": "Returns 200 if the server is ready to accept traffic. May check database connectivity. Returns 503 if dependencies are unavailable.",
+        "responses": {
+          "200": {
+            "description": "Server is ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "enum": ["ok"] },
+                    "checks": {
+                      "type": "object",
+                      "properties": {
+                        "database": { "type": "string", "enum": ["ok", "degraded", "unavailable"] }
+                      }
+                    }
+                  },
+                  "required": ["status"]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is not ready — dependencies unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "GameActionRequest": {
+        "type": "object",
+        "required": ["input", "playerId"],
+        "properties": {
+          "input": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The player's action text"
+          },
+          "playerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Unique player identifier"
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["action", "prepare"],
+            "description": "Game mode: 'action' for normal play, 'prepare' for planning"
+          },
+          "playerName": {
+            "type": "string",
+            "description": "Optional player name override"
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "description": "Client-generated unique key to prevent duplicate turn execution"
+          }
+        }
+      },
+      "PlayerSnapshot": {
+        "type": "object",
+        "required": ["id", "status", "name", "gender", "stats", "inventory", "codex", "relationships"],
+        "properties": {
+          "id": { "type": "string" },
+          "status": { "type": "string", "enum": ["ALIVE", "DEAD"] },
+          "name": { "type": "string" },
+          "gender": { "type": "string" },
+          "stats": { "$ref": "#/components/schemas/CharacterStats" },
+          "inventory": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/InventoryItem" }
+          },
+          "codex": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/CodexEntry" }
+          },
+          "relationships": {
+            "type": "object",
+            "additionalProperties": { "type": "number" }
+          }
+        }
+      },
+      "CharacterStats": {
+        "type": "object",
+        "required": ["hp", "mp", "spirit", "realm", "age", "race", "alignment", "sect", "spiritual_root", "mental_state", "reputation"],
+        "properties": {
+          "hp": {
+            "type": "object",
+            "required": ["current", "max", "status_desc"],
+            "properties": {
+              "current": { "type": "number" },
+              "max": { "type": "number" },
+              "status_desc": { "type": "string" }
+            }
+          },
+          "mp": {
+            "type": "object",
+            "required": ["current", "max", "status_desc"],
+            "properties": {
+              "current": { "type": "number" },
+              "max": { "type": "number" },
+              "status_desc": { "type": "string" }
+            }
+          },
+          "spirit": {
+            "type": "object",
+            "required": ["value", "desc"],
+            "properties": {
+              "value": { "type": "number" },
+              "desc": { "type": "string" }
+            }
+          },
+          "realm": { "type": "string" },
+          "age": {
+            "type": "object",
+            "required": ["current", "max"],
+            "properties": {
+              "current": { "type": "number" },
+              "max": { "type": "number" }
+            }
+          },
+          "race": { "type": "string" },
+          "alignment": { "type": "string" },
+          "sect": { "type": "string" },
+          "spiritual_root": { "type": "string" },
+          "mental_state": { "type": "string" },
+          "reputation": { "type": "number" },
+          "emotion": { "type": "string" },
+          "state_of_mind": { "type": "number" },
+          "fortune": { "type": "number" },
+          "karma": { "type": "number" },
+          "shield": {
+            "type": "object",
+            "required": ["current", "max"],
+            "properties": {
+              "current": { "type": "number" },
+              "max": { "type": "number" }
+            }
+          },
+          "techniques": {
+            "type": "object",
+            "required": ["main", "combat", "movement", "support"],
+            "properties": {
+              "main": { "type": "string" },
+              "combat": { "type": "array", "items": { "type": "string" } },
+              "movement": { "type": "string" },
+              "support": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "talents": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "traits": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "InventoryItem": {
+        "type": "object",
+        "required": ["id", "name", "grade", "type", "description", "count", "value"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string", "minLength": 1 },
+          "grade": { "type": "string" },
+          "type": { "type": "string" },
+          "description": { "type": "string" },
+          "count": { "type": "integer", "minimum": 0 },
+          "value": { "type": "number" }
+        }
+      },
+      "CodexEntry": {
+        "type": "object",
+        "required": ["id", "name", "entry_type", "description", "metadata", "timestamp"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "entry_type": { "type": "string" },
+          "description": { "type": "string" },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "timestamp": { "type": "number" }
+        }
+      },
+      "PlayerResponse": {
+        "type": "object",
+        "required": ["player"],
+        "properties": {
+          "player": { "$ref": "#/components/schemas/PlayerSnapshot" }
+        }
+      },
+      "ProblemDetails": {
+        "type": "object",
+        "required": ["type", "title", "status", "detail", "code", "requestId", "retryable"],
+        "properties": {
+          "type": { "type": "string", "format": "uri" },
+          "title": { "type": "string" },
+          "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+          "detail": { "type": "string" },
+          "instance": { "type": "string" },
+          "code": { "type": "string", "description": "Stable machine-readable error code" },
+          "requestId": { "type": "string", "description": "Correlation ID for this request" },
+          "retryable": { "type": "boolean", "description": "Whether the client may safely retry" }
+        }
+      },
+      "ValidationError": {
+        "allOf": [
+          { "$ref": "#/components/schemas/ProblemDetails" },
+          {
+            "type": "object",
+            "properties": {
+              "errors": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["pointer", "message"],
+                  "properties": {
+                    "pointer": { "type": "string", "description": "JSON Pointer to the invalid field" },
+                    "message": { "type": "string", "description": "Human-readable validation message" }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "SSEEvent": {
+        "type": "object",
+        "required": ["protocolVersion", "requestId", "runId", "sequence", "occurredAt", "type", "payload"],
+        "properties": {
+          "protocolVersion": { "type": "string", "const": "1.0" },
+          "requestId": { "type": "string", "minLength": 1 },
+          "runId": { "type": "string", "minLength": 1 },
+          "sequence": { "type": "integer", "minimum": 0 },
+          "occurredAt": { "type": "string", "format": "date-time" },
+          "type": {
+            "type": "string",
+            "enum": ["accepted", "step", "text-delta", "codex", "journal", "state_update", "completed", "failed", "cancelled"]
+          },
+          "payload": {
+            "description": "Event-type-specific payload. Use the discriminated union by `type` for exact validation."
+          }
+        }
+      }
+    }
+  }
+}

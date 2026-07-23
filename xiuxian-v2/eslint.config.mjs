@@ -10,6 +10,8 @@ const eslintConfig = defineConfig([
   {
     rules: {
       "@typescript-eslint/no-explicit-any": "off",
+      // Reject empty catch blocks (task 1.5)
+      "no-empty": ["error", { "allowEmptyCatch": false }],
     },
   },
   // Override default ignores of eslint-config-next.

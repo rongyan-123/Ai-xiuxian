@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, Loader2, Brain, RefreshCw } from "lucide-react";
 import { marked } from "marked";
-import { IChatMessage } from "@/types";
+import { parseSSEChunk, parseSSEJson } from "@/client/sse-parser";
 
 const LOADING_POEMS = [
   "天上白玉京，十二楼五城。\n仙人抚我顶，结发受长生。",
@@ -27,13 +27,6 @@ const LOADING_POEMS = [
   "我本楚狂人，凤歌笑孔丘。",
 ];
 
-function getLLMConfig() {
-  try {
-    return JSON.parse(localStorage.getItem("xiuxian-llm-config") || "{}");
-  } catch {
-    return {};
-  }
-}
 export function ChatPanel() {
   const {
     addMessage,
@@ -106,19 +99,6 @@ export function ChatPanel() {
     });
   };
 
-  /** 检测文本是否像是一条错误消息 */
-  const isErrorLike = (text: string) => {
-    if (!text) return false;
-    const head = text.substring(0, 100);
-    return (
-      /\[Server Error\]|\[Connection Error\]|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(
-        head,
-      ) ||
-      /^\s*\{.*"error"/i.test(head) ||
-      /\b(Error|404|500|502|503|401|403)\b/i.test(head)
-    );
-  };
-
   const doSend = async (text: string, skipUserMessage?: boolean) => {
     if (!text.trim() || isLoading || !player || !active) return;
     if (!skipUserMessage) {
@@ -132,14 +112,15 @@ export function ChatPanel() {
     setLoading(true);
 
     try {
-      const res = await fetch("/api/game/action", {
+      const res = await fetch("/api/v1/game/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           input: text,
           playerId: player?.id || String(Date.now()),
           playerName: player?.name || "无名",
-          llmConfig: getLLMConfig(),
+          mode: "action",
+          idempotencyKey: `idem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         }),
       });
 
@@ -148,79 +129,110 @@ export function ChatPanel() {
         let errMsg = "请求失败 (" + res.status + ")";
         try {
           errMsg = JSON.parse(errBody).error || errMsg;
-        } catch {}
+        } catch { /* body is not JSON, use default errMsg */ }
         addErrorMessage(errMsg, text);
         return;
       }
       const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
       if (!reader) return;
 
-      let buffer = "";
+      let sseBuffer = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
 
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
+        const { events, buffer: newBuffer } = parseSSEChunk(value, sseBuffer);
+        sseBuffer = newBuffer;
 
-        let currentEventName = "";
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            currentEventName = line.slice(7);
-          } else if (line.startsWith("data: ")) {
-            const data = line.slice(6);
-            if (currentEventName === "text-delta") {
-              const parsed = JSON.parse(data);
-              if (parsed.content) {
-                setStreamingText((prev) => prev + parsed.content);
-              }
-            } else if (currentEventName === "reply") {
-              const parsed = JSON.parse(data);
-              if (parsed.reply) {
-                if (isErrorLike(parsed.reply)) {
-                  addErrorMessage(parsed.reply, text);
-                } else {
-                  addMessage({
-                    id: "ai-" + Date.now(),
-                    role: "assistant",
-                    content: parsed.reply,
-                    timestamp: Date.now(),
-                  });
-                }
-              }
-              setStreamingText("");
-              if (parsed.player)
-                useGameStore.getState().setPlayer(parsed.player);
-              if (parsed.deltas?.addedItems || parsed.deltas?.reducedItems)
-                addNotification("backpack");
-            } else if (currentEventName === "codex") {
-              const ce = JSON.parse(data);
-              useGameStore.getState().addCodex({
-                id: "c-" + Date.now(),
-                name: ce.name,
-                entry_type: ce.entry_type || "general",
-                description: ce.description || "",
-                metadata: ce.metadata || {},
-                timestamp: ce.timestamp || Date.now(),
-              });
-              addNotification("codex");
-            } else if (currentEventName === "journal") {
-              const je = JSON.parse(data);
-              useGameStore.getState().addJournal({
-                id: "j-" + Date.now(),
-                title: je.title,
-                content: je.content,
-                entry_type: je.entry_type || "general",
-                timestamp: je.timestamp || Date.now(),
-              });
-              addNotification("journal");
-            } else if (currentEventName === "step") {
-              setStepLogs((prev) => [...prev, JSON.parse(data).label]);
-            } else if (currentEventName === "error") {
-              addErrorMessage(JSON.parse(data).message, text);
+        for (const rawEvent of events) {
+          const parsed = parseSSEJson(rawEvent);
+          if (!parsed) continue;
+
+          const eventType = parsed.type;
+          const payload = parsed.payload as Record<string, unknown>;
+
+          if (eventType === "text-delta") {
+            const content = payload.content as string | undefined;
+            if (content) {
+              setStreamingText((prev) => prev + content);
             }
+          } else if (eventType === "completed") {
+            // API v1 terminal: game turn succeeded
+            const reply = payload.reply as string | undefined;
+            if (reply) {
+              addMessage({
+                id: "ai-" + Date.now(),
+                role: "assistant",
+                content: reply,
+                timestamp: Date.now(),
+              });
+            }
+            setStreamingText("");
+          } else if (eventType === "state_update") {
+            // API v1: final player snapshot from server
+            if (payload.player)
+              useGameStore.getState().setPlayer(payload.player as any);
+            const deltas = payload.deltas as Record<string, unknown> | undefined;
+            if (deltas?.addedItems || deltas?.reducedItems)
+              addNotification("backpack");
+          } else if (eventType === "failed") {
+            // API v1: server-side error
+            const detail = payload.detail as string | undefined;
+            const code = payload.code as string | undefined;
+            const retryable = payload.retryable as boolean | undefined;
+            const message = detail ?? code ?? "未知错误";
+            addErrorMessage(retryable ? `[可重试] ${message}` : message, text);
+            setStreamingText("");
+          } else if (eventType === "cancelled") {
+            // API v1: user cancelled
+            setStreamingText("");
+          } else if (eventType === "accepted") {
+            // API v1: handshake — no UI action needed
+          } else if (eventType === "reply") {
+            // Legacy fallback (old /api/game/action format)
+            const reply = payload.reply as string | undefined;
+            if (reply) {
+              addMessage({
+                id: "ai-" + Date.now(),
+                role: "assistant",
+                content: reply,
+                timestamp: Date.now(),
+              });
+            }
+            setStreamingText("");
+            if (payload.player)
+              useGameStore.getState().setPlayer(payload.player as any);
+            const deltas = payload.deltas as Record<string, unknown> | undefined;
+            if (deltas?.addedItems || deltas?.reducedItems)
+              addNotification("backpack");
+          } else if (eventType === "codex") {
+            const ce = payload;
+            useGameStore.getState().addCodex({
+              id: "c-" + Date.now(),
+              name: ce.name as string,
+              entry_type: (ce.entry_type as string) || "general",
+              description: (ce.description as string) || "",
+              metadata: (ce.metadata as Record<string, unknown>) || {},
+              timestamp: (ce.timestamp as number) || Date.now(),
+            });
+            addNotification("codex");
+          } else if (eventType === "journal") {
+            const je = payload;
+            useGameStore.getState().addJournal({
+              id: "j-" + Date.now(),
+              title: je.title as string,
+              content: je.content as string,
+              entry_type: (je.entry_type as string) || "general",
+              timestamp: (je.timestamp as number) || Date.now(),
+            });
+            addNotification("journal");
+          } else if (eventType === "step") {
+            const label = payload.label as string | undefined;
+            if (label) setStepLogs((prev) => [...prev, label]);
+          } else if (eventType === "error") {
+            // Legacy fallback (old format error)
+            const message = payload.message as string | undefined;
+            if (message) addErrorMessage(message, text);
           }
         }
       }

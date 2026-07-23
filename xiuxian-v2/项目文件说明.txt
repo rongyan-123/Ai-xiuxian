@@ -244,10 +244,83 @@ ui/ — Shadcn UI 基础组件
 
   - AI 提示词不要硬编码在 API 路由中，统一放 src/lib/game/prompts.ts
   - 所有数值变更由 ruleEngineNode（纯代码）处理，AI 只负责传参
-  - SSE 事件类型：text-delta(流式文本) / state-update(状态快照) /
-    system-event(系统事件) / reply(完整回复) / codex(图鉴) / journal(日志)
+  - API v1 SSE 事件类型：accepted / step / text-delta / codex / journal /
+    state_update / completed / failed / cancelled（9种，判别联合 schema）
+  - SSE 事件包装在版本化信封：protocolVersion, requestId, runId, sequence,
+    occurredAt, type, payload
+  - 终端事件（completed/failed/cancelled）每个流必须有且仅有一个
+  - 错误响应用 RFC 9457 Problem Details 格式（application/problem+json）
   - 图鉴数据直接存 Player.codex (JSONB)，不再从向量库查询
   - 前端 Zustand store 持久化到 localStorage，避免刷新丢失
 
 ================================================================================
-最后更新：2026-05-27
+十、新增文件（API Robustness 重构 — 2026-07-23）
+================================================================================
+
+src/client/sse-parser.ts
+  └─ 客户端增量 SSE 解析器（纯函数，无 React 依赖）
+     parseSSEChunk / createSSEParser / parseSSEJson
+
+src/client/game-turn-client.ts
+  └─ API v1 HTTP 客户端（AsyncIterator），集成 SSEEventSchema 校验
+
+src/client/game-turn-reducer.ts
+  └─ 游戏回合状态机（7 状态：idle→submitting→streaming→completed/failed/cancelled）
+
+src/components/error-boundary.tsx
+  └─ React 渲染错误边界（ErrorBoundary + GameErrorBoundary）
+
+src/app/error.tsx
+  └─ Next.js 路由级错误页面（天道异常）
+
+tests/fixtures/sse-protocol-fixtures.ts
+  └─ SSE 协议测试固件（8 种场景：正常/失败/取消/损坏/缺序列/重复终端/中断）
+
+openspec/changes/refactor-api-robustness/fault-injection-matrix.md
+  └─ 故障注入矩阵（50 种故障场景，6 层架构）
+
+src/server/application/execute-game-turn.ts
+  └─ 游戏回合编排服务（单入口点，纯依赖注入）
+
+src/server/application/game-graph.ts
+  └─ LangGraph 工作流定义（4 节点：RAG → 剧情 → 规则引擎 → 持久化）
+
+src/server/contracts/
+  ├─ sse-events.ts       # SSE 事件判别联合 Schema
+  ├─ problem-details.ts  # RFC 9457 错误 Schema
+  ├─ player.ts           # 玩家状态 Schema
+  └─ game-action.ts      # 游戏行动请求 Schema
+
+src/server/streaming/
+  ├─ sse-encoder.ts      # SSE 编码器
+  ├─ sequence.ts         # 序列号分配器
+  ├─ terminal-guard.ts   # 终端事件守卫
+  ├─ event-factory.ts    # 事件工厂
+  └─ adapter.ts          # 流适配器
+
+src/server/domain/
+  └─ 纯领域规则引擎（无副作用，依赖注入 now/random）
+
+src/server/infrastructure/
+  └─ 仓储端口 + Prisma/Fake 适配器 + LLM/RAG/重试适配器
+
+src/server/request-context/
+  └─ 不可变请求上下文（requestId/runId/deadline/AbortSignal/clock/logger）
+
+src/server/observability/
+  └─ 结构化日志 + 递归敏感字段脱敏 + OpenTelemetry span
+
+src/app/api/v1/
+  ├─ game/action/route.ts   # API v1 游戏行动端点（SSE 流）
+  └─ health/live|ready/     # 健康检查端点
+
+src/app/api/game/action/route.ts
+  └─ @deprecated 旧版端点，保留为兼容适配器（906 行，计划在 11.5 删除）
+
+tests/
+  ├─ unit/ (23 测试文件, 472 用例)
+  ├─ contract/ (101 用例)
+  └─ fixtures/ (共享测试固件)
+
+================================================================================
+最后更新：2026-07-23

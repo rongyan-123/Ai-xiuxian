@@ -1,10 +1,9 @@
-﻿/* eslint-disable @typescript-eslint/no-explicit-any */
-'use client'
+﻿'use client'
 
 import { useState } from 'react'
 import { useGameStore } from '@/stores/game'
-import { Loader2, RefreshCw } from 'lucide-react'
-import { IChatMessage } from '@/types'
+import { Loader2 } from 'lucide-react'
+import { parseSSEChunk, parseSSEJson } from '@/client/sse-parser'
 
 type Trope = {
   id: string
@@ -32,10 +31,6 @@ const tropes: Trope[] = [
   { id: "sudi", name: "宿敌流", desc: "主角与命中宿敌从少年斗到中年，一路相爱相杀最终一决高低", icon: "⚔️", openingHint: "与宿敌纠缠、相爱相杀、最终对决" },
 ]
 
-function getLLMConfig() {
-  try { return JSON.parse(localStorage.getItem("xiuxian-llm-config") || "{}") } catch { return {} }
-}
-
 export function SelectScreen() {
   const { setPhase, setPlayer, addMessage, removeMessage, setLoading, setCurrentEvent, player, addNotification } = useGameStore()
   const [selected, setSelected] = useState<string | null>(null)
@@ -61,12 +56,6 @@ export function SelectScreen() {
     return base + "border-zinc-700 bg-zinc-900 hover:bg-zinc-800/50" 
   }
 
-  const isErrorLike = (text: string) => {
-    if (!text) return false
-    return /\[Server Error\]|\[Connection Error\]|ECONNREFUSED|ECONNRESET|ETIMEDOUT|^\s*\{\s*"error"/i.test(text) ||
-      /\b(error|404|500|502|503|401|403)\b/i.test(text.substring(0, 80))
-  }
-
   const handleSelect = async () => {
     if (!selected || loading || !player) return
     const trope = tropes.find(t => t.id === selected)
@@ -77,53 +66,77 @@ export function SelectScreen() {
     const userInput = '\n[STREAM_START]\n[GENRE]' + trope.id + '\n[TITLE]' + trope.name + '\n[HINT]' + trope.openingHint + '\n[STREAM_END]\n'
     addMessage({ id: 'sys-' + Date.now(), role: 'system', content: '选择了开局流派: ' + trope.name, timestamp: Date.now() })
     try {
-      const res = await fetch("/api/game/action", {
+      const res = await fetch("/api/v1/game/action", {
         method: "POST" ,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          llmConfig: getLLMConfig(),
           input: userInput,
           playerName: player?.name || '无名' ,
           playerId: player?.id || String(Date.now()),
-          mode: 'prepare'
+          mode: 'prepare',
+          idempotencyKey: `idem-prepare-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         })
       })
       if (!res.ok) {
         const errBody = await res.text()
         let errMsg = '请求失败 (' + res.status + ')'
-        try { errMsg = JSON.parse(errBody).error || errMsg } catch {}
+        try { errMsg = JSON.parse(errBody).error || errMsg } catch { /* body is not JSON, use default errMsg */ }
         addErrorMessage(errMsg, userInput)
         return
       }
       const reader = res.body?.getReader()
-      const decoder = new TextDecoder()
       if (!reader) return
-      let buffer = ''
+      let sseBuffer = ''
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const parts = buffer.split(String.fromCharCode(10));
-        buffer = parts.pop() || ''
-        let evt = ''
-        for (const line of parts) {
-          if (line.startsWith('event: ')) evt = line.slice(7)
-          else if (line.startsWith('data: ')) {
-            const d = line.slice(6)
-            if (evt === 'reply') {
-              const p = JSON.parse(d)
-              if (p.reply) {
-                if (isErrorLike(p.reply)) {
-                  addErrorMessage(p.reply, userInput)
-                } else {
-                  addMessage({ id: 'ai-' + Date.now(), role: 'assistant', content: p.reply, timestamp: Date.now() })
-                }
-              }
-              if (p.player) setPlayer(p.player)
-            } else if (evt === 'step') setCurrentEvent(JSON.parse(d).label)
-            else if (evt === 'codex') {var ce=JSON.parse(d);useGameStore.getState().addCodex({id:Date.now().toString(),name:ce.name,entry_type:ce.entry_type||"general",description:ce.description||"",metadata:ce.metadata||{},timestamp:ce.timestamp||Date.now()});addNotification('codex')}
-            else if (evt === 'journal') {var je=JSON.parse(d);useGameStore.getState().addJournal({id:Date.now().toString(),title:je.title,content:je.content,entry_type:je.entry_type||"general",timestamp:je.timestamp||Date.now()});addNotification('journal')}
-            else if (evt === 'error') addErrorMessage(JSON.parse(d).message, userInput)
+
+        const { events, buffer: newBuffer } = parseSSEChunk(value, sseBuffer)
+        sseBuffer = newBuffer
+
+        for (const rawEvent of events) {
+          const parsed = parseSSEJson(rawEvent)
+          if (!parsed) continue
+
+          const evt = parsed.type
+          const payload = parsed.payload as Record<string, unknown>
+
+          if (evt === 'completed') {
+            // API v1 terminal: game turn succeeded
+            const reply = payload.reply as string | undefined
+            if (reply) {
+              addMessage({ id: 'ai-' + Date.now(), role: 'assistant', content: reply, timestamp: Date.now() })
+            }
+          } else if (evt === 'state_update') {
+            if (payload.player) setPlayer(payload.player as any)
+          } else if (evt === 'failed') {
+            const detail = payload.detail as string | undefined
+            const message = detail ?? '准备失败'
+            addErrorMessage(message, userInput)
+          } else if (evt === 'accepted') {
+            // API v1: handshake — no UI action needed
+          } else if (evt === 'reply') {
+            // Legacy fallback (old /api/game/action format)
+            const reply = payload.reply as string | undefined
+            if (reply) {
+              addMessage({ id: 'ai-' + Date.now(), role: 'assistant', content: reply, timestamp: Date.now() })
+            }
+            if (payload.player) setPlayer(payload.player as any)
+          } else if (evt === 'step') {
+            const label = payload.label as string | undefined
+            if (label) setCurrentEvent(label)
+          } else if (evt === 'codex') {
+            const ce = payload
+            useGameStore.getState().addCodex({id:Date.now().toString(),name:ce.name as string,entry_type:(ce.entry_type as string)||"general",description:(ce.description as string)||"",metadata:(ce.metadata as Record<string,unknown>)||{},timestamp:(ce.timestamp as number)||Date.now()})
+            addNotification('codex')
+          } else if (evt === 'journal') {
+            const je = payload
+            useGameStore.getState().addJournal({id:Date.now().toString(),title:je.title as string,content:je.content as string,entry_type:(je.entry_type as string)||"general",timestamp:(je.timestamp as number)||Date.now()})
+            addNotification('journal')
+          } else if (evt === 'error') {
+            // Legacy fallback (old format error)
+            const message = payload.message as string | undefined
+            if (message) addErrorMessage(message, userInput)
           }
         }
       }

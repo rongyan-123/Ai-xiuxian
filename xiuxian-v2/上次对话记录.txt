@@ -1,51 +1,48 @@
-上次对话记录 — 2026-06-15（第6轮）
+上次对话记录 — 2026-07-23（Session 5 — Playwright E2E 重写 + 最终清理）
 ================================================================================
 
 【本轮任务】
-修复修仙日志（经验库）两个 Bug + 添加 E2E 测试用例 + CLAUDE.md 规则
+清理临时文件、重写 Playwright E2E 测试（修复假阳性）、运行完整测试套件、更新文档。
 
-【Bug 1 — 发送按钮灰色】
-根因: ChatPanel 的 input 是组件内 useState("")，日志→聊天导航时组件卸载重挂载，input 丢失。
-修复: 在 zustand store 添加 pendingInput 字段，journal 跳转前 setPendingInput(content)，
-     ChatPanel mount 时读取 pendingInput 并填入 input → send 按钮正常可用。
+【Playwright E2E 重写 — 发现三个致命假阳性问题】
 
-【Bug 2 — 筛选标签无 UI 反馈】
-根因: journal-panel 原版没有筛选标签 UI。
-修复: 新增 4 个筛选标签（全部/成功经验/失败教训/踩坑点），选中态 amber 边框+背景，
-     未选中态 zinc 样式，过滤逻辑完整。同时扩展 entry_type 支持 success/failure/pitfall。
+原 e2e/api-robustness.spec.ts 存在三个关键 bug：
 
-【已完成的修改】
+1. 输入定位器不匹配：
+   'textarea, [contenteditable="true"], input[type="text"]' 从来匹配不到
+   @base-ui/react 的 Input 组件（渲染为 <input data-slot="input">）
+   导致 sendMessage() 每次都静默跳过，测试从未真正执行输入
 
-1. src/stores/game.ts — 新增 pendingInput
-   - state 添加 pendingInput: string（默认""）
-   - action setPendingInput(input: string)
-   - resetGame 中包含 pendingInput 重置
-   - 不加入 partialize（无需持久化）
+2. page.route() 与 Next.js 16 Turbopack 不兼容：
+   Playwright 的 route 拦截无法捕获 Turbopack dev server 的 fetch() 请求
+   所有 route 都显示 Intercepted: false
 
-2. src/components/chat-panel.tsx — 读取 pendingInput
-   - useEffect 监听 pendingInput，有值时填入 input 并清空
+3. 断言假通过：
+   expect(content).toBeTruthy() 永远通过（页面总有内容）
+   即使输入从未发送，测试也显示通过
 
-3. src/components/journal-panel.tsx — 完全重写
-   - 新增 FILTERS 数组 + filter useState
-   - 筛选标签栏，选中态视觉反馈
-   - 每个日志条目右下角"聊这个"按钮
-   - 点击 → setPendingInput + setCurrentView("chat")
-   - 扩展 typeConfig 支持 success(emerald)/failure(orange)/pitfall(purple)
+【重写方案】
+- INPUT_SELECTOR = '[data-slot="input"]'（匹配 @base-ui/react Input）
+- 改用 page.evaluate() 覆盖 window.fetch（绕过 Turbopack 限制）
+- 具体断言：toContain('青云山')、toMatch(/Connection|错误|失败|error/i)
+- getToPlayingState() 补充 phase: 'PLAYING'（之前缺失，页面停在角色创建）
+- sendMessage() 优雅处理移动端（input 不可见时 return false）
 
-4. CLAUDE.md — 新增规则 8.1
-   每个 UI 按钮必须测试完整流程：可见→可点击→点击后状态变化→最终结果
-   特别注意 disabled 状态的按钮要在输入有内容后验证重新变为 enabled
+【完整测试结果 2026-07-23】
 
-5. e2e/game.spec.ts — 新增 ~120 行测试
-   Journal 测试块：6 个筛选标签测试 + 4 个聊天按钮测试 + 1 个发送启用测试
+| 层 | 测试数 | 文件数 | 状态 |
+|------|------|------|------|
+| Unit | 472 | 19 | 全部通过 |
+| Contract | 132 | 5 | 全部通过 |
+| Playwright Desktop | 14 | 1 | 全部通过 |
+| Playwright Mobile | 14 | 1 | 全部通过 |
+| **总计** | **632** | **25** | **全部通过** |
 
-【技术要点】
-- Zustand store 的 pendingInput 实现跨组件通信（无需 URL 参数）
-- Playwright 移动端测试：getByText/locator 需要 .filter({ visible: true }).first()
-  因为 Tailwind hidden md:flex + md:hidden 会在 DOM 中同时渲染两套布局
-- getByRole 默认 exclude hidden elements，无需额外处理
+【清理】
+- 删除 e2e/debug-mock.spec.ts（临时调试文件）
 
-【当前状态】
-- 两个 Bug 已修复，浏览器验证通过
-- E2E 测试已添加，待全部跑通
-- 待 git commit
+【真正阻塞任务】
+- 12.3：迁移验证 — 需要 PostgreSQL（端口 5433）+ 遗留玩家数据快照
+- 12.4（integration 部分）：tests/integration/ 目录结构就绪，需要 PostgreSQL + Prisma 迁移
+
+632 tests 全绿。生产构建通过。所有代码级任务完成。

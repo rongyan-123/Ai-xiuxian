@@ -9,21 +9,61 @@ datasource db {
 model Player {
   id        String   @id @default(cuid())
   status    String   @default("ALIVE") // ALIVE | DEAD
-  name      String   
-  gender    String   
-  
+  name      String
+  gender    String
+  version   Int      @default(0)
+
   stats          Json
   inventory      Json    @default("[]")
   codex          Json    @default("[]")
   relationships  Json    @default("{}")
   situations     Json    @default("[]")
-  foreshadowings Json    @default("[]") 
-  
+  foreshadowings Json    @default("[]")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   chatHistory          ChatMessage[]
   conversationSummaries ConversationSummary[]
+  turnExecutions       GameTurnExecution[]
+}
+
+model GameTurnExecution {
+  id              String   @id @default(cuid())
+  playerId        String
+  idempotencyKey  String
+  status          String   @default("PENDING") // PENDING | RUNNING | COMPLETED | FAILED | CANCELLED
+  requestId       String
+  runId           String?
+  errorCode       String?
+  errorDetail     String?
+  attemptCount    Int      @default(1)
+  candidateText   String?  @db.Text
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  player          Player   @relation(fields: [playerId], references: [id])
+
+  @@unique([playerId, idempotencyKey])
+  @@index([playerId])
+  @@index([status])
+}
+
+model OutboxRecord {
+  id              String    @id @default(cuid())
+  playerId        String
+  eventType       String
+  payload         Json
+  status          String    @default("PENDING") // PENDING | PROCESSING | COMPLETED | FAILED
+  attemptCount    Int       @default(0)
+  maxAttempts     Int       @default(3)
+  lastError       String?
+  nextRetryAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status, nextRetryAt])
+  @@index([playerId])
 }
 
 model ChatMessage {
