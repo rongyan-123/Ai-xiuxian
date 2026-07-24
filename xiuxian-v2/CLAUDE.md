@@ -71,24 +71,35 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
+## 架构头脑风暴日志（最高优先级）
+
+**任何关于 Agent 框架重写的讨论、设计、头脑风暴，必须：**
+1. **先读** `docs/architecture-brainstorm-log.md` — 了解之前的讨论上下文
+2. **写入** 相同的日志文件 — 追加新的思考、决策、待讨论问题
+3. 日志格式遵循现有结构：用户思考点 + AI 回应 + 决策结论
+
+---
+
 ## OpenSpec 规范驱动开发（SDD）
 
 本项目已安装 [OpenSpec](https://github.com/Fission-AI/OpenSpec)（`@fission-ai/openspec` v1.4.1），**所有非 trivial 任务必须走完整四阶段工作流**：
 
-| 阶段 | 斜杠命令 | Skill | 做什么 |
-|------|---------|-------|--------|
-| ① 探索 | `/opsx:explore` | `openspec-explore` | 思考、调研、画图、对比方案。只读，不写代码 |
-| ② 提案 | `/opsx:propose` | `openspec-propose` | 生成 proposal.md + design.md + tasks.md |
-| ③ 实现 | `/opsx:apply` | `openspec-apply-change` | 按 tasks.md 逐条实现，自动标记完成状态 |
-| ④ 归档 | `/opsx:archive` | `openspec-archive-change` | 合并 spec、清理 change 目录 |
+| 阶段   | 斜杠命令        | Skill                     | 做什么                                     |
+| ------ | --------------- | ------------------------- | ------------------------------------------ |
+| ① 探索 | `/opsx:explore` | `openspec-explore`        | 思考、调研、画图、对比方案。只读，不写代码 |
+| ② 提案 | `/opsx:propose` | `openspec-propose`        | 生成 proposal.md + design.md + tasks.md    |
+| ③ 实现 | `/opsx:apply`   | `openspec-apply-change`   | 按 tasks.md 逐条实现，自动标记完成状态     |
+| ④ 归档 | `/opsx:archive` | `openspec-archive-change` | 合并 spec、清理 change 目录                |
 
 **强制规则**：
+
 - 用户提出功能需求 → **先 `/opsx:explore`** 搞清问题和方案
 - 方案明确后 → **`/opsx:propose "change-name"`** 生成规划制品
 - 用户确认提案 → **`/opsx:apply`** 开始写代码
 - 全部完成 → **`/opsx:archive`** 归档
 
 **CLI 辅助命令**（需要时用）：
+
 - `openspec list --json` — 查看所有活跃 change
 - `openspec status --change "<name>" --json` — 查看指定 change 状态
 - `openspec instructions <artifact> --change "<name>" --json` — 获取制品生成指引

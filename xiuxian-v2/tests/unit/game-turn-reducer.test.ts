@@ -17,6 +17,7 @@ import {
 import type {
   GameTurnState,
   GameTurnAction,
+  SSEEventAction,
 } from '@/client/game-turn-reducer'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -117,8 +118,8 @@ function resetAction(): GameTurnAction {
   return { type: 'RESET' }
 }
 
-function sseAction(event: ReturnType<typeof acceptedEvent>): GameTurnAction {
-  return { type: 'SSE_EVENT', event: event as GameTurnAction['event'] }
+function sseAction(event: { sequence: number; type: string; payload: Record<string, unknown>; raw: string }): GameTurnAction {
+  return { type: 'SSE_EVENT', event } as SSEEventAction
 }
 
 // ─── Initial State ──────────────────────────────────────────────────────────

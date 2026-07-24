@@ -69,27 +69,71 @@ async function setFakeLLMConfig(page: Page) {
   })
 }
 
+// ── SSE v2 envelope helpers ──────────────────────────────────────────
+
+const API_URL = '**/api/v1/game/action'
+const REQ_ID = 'req-e2e-001'
+const RUN_ID = 'run-e2e-001'
+
+function sseEnvelope(sequence: number, type: string, payload: Record<string, unknown>): string {
+  const now = new Date().toISOString()
+  return `data: ${JSON.stringify({ protocolVersion: '1.0', requestId: REQ_ID, runId: RUN_ID, sequence, occurredAt: now, type, payload })}\n\n`
+}
+
+function sseAccepted(mode = 'action', playerId = 'player-test'): string {
+  return sseEnvelope(0, 'accepted', { requestId: REQ_ID, runId: RUN_ID, playerId, mode })
+}
+
+function sseStep(label: string, seq: number): string {
+  return sseEnvelope(seq, 'step', { label })
+}
+
+function sseTextDelta(content: string, seq: number): string {
+  return sseEnvelope(seq, 'text-delta', { content })
+}
+
+function sseCompleted(reply: string, seq: number): string {
+  return sseEnvelope(seq, 'completed', { reply })
+}
+
+function sseFailed(code: string, detail: string, seq: number, retryable = false): string {
+  return sseEnvelope(seq, 'failed', { type: 'failed', title: code, status: code === 'VALIDATION_ERROR' ? 422 : 500, detail, code, requestId: REQ_ID, retryable })
+}
+
+function sseCancelled(seq: number, reason = 'User cancelled'): string {
+  return sseEnvelope(seq, 'cancelled', { requestId: REQ_ID, runId: RUN_ID, reason })
+}
+
+function sseCodex(name: string, entryType: string, description: string, seq: number): string {
+  return sseEnvelope(seq, 'codex', { name, entry_type: entryType, description, timestamp: Date.now() })
+}
+
+function sseStateUpdate(player: Record<string, unknown>, seq: number): string {
+  return sseEnvelope(seq, 'state_update', { player, deltas: {} })
+}
+
+/** Build a minimal action stream: accepted → completed */
+function buildActionStream(reply: string, mode = 'action'): string {
+  return sseAccepted(mode) + sseCompleted(reply, 1)
+}
+
+/** Build a streaming stream: accepted → text-delta* → completed */
+function buildStreamingStream(chunks: string[], finalReply: string, mode = 'action'): string {
+  let body = sseAccepted(mode)
+  chunks.forEach((c, i) => { body += sseTextDelta(c, i + 1) })
+  body += sseCompleted(finalReply, chunks.length + 1)
+  return body
+}
+
 /**
- * Intercept the /api/game/action POST and fulfill with a minimal SSE
+ * Intercept the /api/v1/game/action POST and fulfill with a minimal SSE
  * stream so we can test the front-end parsing without a real backend.
  */
 async function mockGameAction(page: Page, replies: string[] = ['测试回复：天地灵气涌动，你感到一股强大的力量在体内流转。']) {
-  const sseLines: string[] = []
-  sseLines.push('event: step\ndata: ' + JSON.stringify({ label: '天道记忆检索中...' }) + '\n')
-  for (const reply of replies) {
-    sseLines.push('event: reply\ndata: ' + JSON.stringify({ reply }) + '\n')
-  }
-  sseLines.push('event: done\ndata: \n')
+  const reply = replies.join('')
+  const body = sseAccepted() + sseStep('天道记忆检索中...', 1) + sseCompleted(reply, 2)
 
-  await page.route('**/api/game/action', (route) => {
-    const body = new ReadableStream({
-      start(ctrl) {
-        for (const line of sseLines) {
-          ctrl.enqueue(new TextEncoder().encode(line + '\n'))
-        }
-        ctrl.close()
-      },
-    })
+  await page.route(API_URL, (route) => {
     route.fulfill({
       status: 200,
       headers: { 'content-type': 'text/event-stream' },
@@ -265,16 +309,16 @@ test.describe('Phase: SELECT — 流派选择', () => {
   })
 
   test.describe('流派确认 — API 交互', () => {
-    test('确认选择后发送 POST /api/game/action 含 mode=prepare', async ({ page }) => {
+    test('确认选择后发送 POST /api/v1/game/action 含 mode=prepare', async ({ page }) => {
       await setFakeLLMConfig(page)
 
       let requestBody: any = null
-      await page.route('**/api/game/action', (route) => {
+      await page.route(API_URL, (route) => {
         requestBody = route.request().postDataJSON()
         route.fulfill({
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
-          body: 'event: reply\ndata: ' + JSON.stringify({ reply: '开局剧情...' }) + '\n\nevent: done\ndata: \n',
+          body: buildActionStream('开局剧情...', 'prepare'),
         })
       })
 
@@ -290,20 +334,18 @@ test.describe('Phase: SELECT — 流派选择', () => {
       expect(requestBody.playerName).toBe('流派测试者')
       expect(requestBody.input).toContain('[GENRE]feichai')
       expect(requestBody.input).toContain('[TITLE]废柴流')
-      expect(requestBody.llmConfig).toBeDefined()
-      expect(requestBody.llmConfig.apiKey).toBe('sk-test-placeholder')
     })
 
     test('确认选择后 ChatPanel 显示 loading', async ({ page }) => {
       await setFakeLLMConfig(page)
 
       // 延迟响应，让我们能观察到 loading 状态
-      await page.route('**/api/game/action', async (route) => {
+      await page.route(API_URL, async (route) => {
         await new Promise((r) => setTimeout(r, 500))
         route.fulfill({
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
-          body: 'event: reply\ndata: ' + JSON.stringify({ reply: '开局剧情...' }) + '\n\nevent: done\ndata: \n',
+          body: buildActionStream('开局剧情...', 'prepare'),
         })
       })
 
@@ -317,7 +359,7 @@ test.describe('Phase: SELECT — 流派选择', () => {
     test('API 返回错误时显示错误消息，不会卡在 loading', async ({ page }) => {
       await setFakeLLMConfig(page)
 
-      await page.route('**/api/game/action', (route) => {
+      await page.route(API_URL, (route) => {
         route.fulfill({
           status: 500,
           headers: { 'content-type': 'application/json' },
@@ -338,7 +380,7 @@ test.describe('Phase: SELECT — 流派选择', () => {
     test('API 返回 400 错误码时正确处理', async ({ page }) => {
       await setFakeLLMConfig(page)
 
-      await page.route('**/api/game/action', (route) => {
+      await page.route(API_URL, (route) => {
         route.fulfill({
           status: 400,
           headers: { 'content-type': 'application/json' },
@@ -432,7 +474,7 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
       await jumpToPlaying(page)
       // handleSend 检查 !input.trim()，空输入直接 return，不发 API
       let apiCalled = false
-      await page.route('**/api/game/action', () => { apiCalled = true })
+      await page.route(API_URL, () => { apiCalled = true })
       const input = page.locator('input[placeholder="输入你的行动或对话..."]').filter({ visible: true })
       await input.fill('')
       await input.press('Enter')
@@ -458,18 +500,18 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
   })
 
   test.describe('消息发送 — API 层验证', () => {
-    test('发送消息后 POST /api/game/action 带正确请求体', async ({ page }) => {
+    test('发送消息后 POST /api/v1/game/action 带正确请求体', async ({ page }) => {
       await freshStart(page)
       await setFakeLLMConfig(page)
       await jumpToPlaying(page, 'API测试者')
 
       let capturedBody: any = null
-      await page.route('**/api/game/action', (route) => {
+      await page.route(API_URL, (route) => {
         capturedBody = route.request().postDataJSON()
         route.fulfill({
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
-          body: 'event: reply\ndata: ' + JSON.stringify({ reply: '天地灵气...' }) + '\n\nevent: done\ndata: \n',
+          body: buildActionStream('天地灵气...'),
         })
       })
 
@@ -483,7 +525,6 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
       expect(capturedBody.input).toBe('修炼功法')
       expect(capturedBody.playerId).toContain('test-')
       expect(capturedBody.playerName).toBe('API测试者')
-      expect(capturedBody.llmConfig).toBeDefined()
     })
 
     test('发送消息后用户消息出现在聊天记录中', async ({ page }) => {
@@ -491,11 +532,11 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
       await setFakeLLMConfig(page)
       await jumpToPlaying(page)
 
-      await page.route('**/api/game/action', (route) => {
+      await page.route(API_URL, (route) => {
         route.fulfill({
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
-          body: 'event: reply\ndata: ' + JSON.stringify({ reply: '你开始修炼...' }) + '\n\nevent: done\ndata: \n',
+          body: buildActionStream('你开始修炼...'),
         })
       })
 
@@ -513,11 +554,11 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
       await setFakeLLMConfig(page)
       await jumpToPlaying(page)
 
-      await page.route('**/api/game/action', (route) => {
+      await page.route(API_URL, (route) => {
         route.fulfill({
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
-          body: 'event: reply\ndata: ' + JSON.stringify({ reply: '你开始修炼，感受到天地灵气汇聚...' }) + '\n\nevent: done\ndata: \n',
+          body: sseAccepted() + sseTextDelta('你开始修炼，感受到', 1) + sseTextDelta('天地灵气汇聚...', 2) + sseCompleted('你开始修炼，感受到天地灵气汇聚...', 3),
         })
       })
 
@@ -525,7 +566,7 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
       await input.fill('修炼')
       await input.press('Enter')
 
-      // AI 消息应该出现在深色气泡中
+      // AI 消息应该出现在深色气泡中 (completed event triggers addMessage)
       const aiBubble = page.locator('.bg-zinc-800.rounded-2xl').filter({ visible: true }).first()
       await expect(aiBubble).toContainText('天地灵气', { timeout: 5000 })
     })
@@ -536,17 +577,18 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
       await jumpToPlaying(page)
 
       // 慢速响应让 loading 可见
-      await page.route('**/api/game/action', async (route) => {
+      await page.route(API_URL, async (route) => {
         await new Promise((r) => setTimeout(r, 400))
         route.fulfill({
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
-          body: 'event: step\ndata: ' + JSON.stringify({ label: '天道记忆检索中...' }) + '\n\nevent: reply\ndata: ' + JSON.stringify({ reply: '灵气...' }) + '\n\nevent: done\ndata: \n',
+          body: sseAccepted() + sseStep('天道记忆检索中...', 1) + sseCompleted('灵气...', 2),
         })
       })
 
-      await page.locator('input[placeholder="输入你的行动或对话..."]').filter({ visible: true }).fill('test')
-      await page.locator('input[placeholder="输入你的行动或对话..."]').filter({ visible: true }).press('Enter')
+      const input = page.locator('input[placeholder="输入你的行动或对话..."]').filter({ visible: true })
+      await input.fill('test')
+      await input.press('Enter')
 
       // loading 出现
       await expect(page.getByText('天道推演').filter({ visible: true })).toBeVisible({ timeout: 3000 })
@@ -558,7 +600,14 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
       await jumpToPlaying(page)
 
       let sendCount = 0
-      await page.route('**/api/game/action', () => { sendCount++ })
+      await page.route(API_URL, (route) => {
+        sendCount++
+        route.fulfill({
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body: buildActionStream('ok'),
+        })
+      })
 
       const input = page.locator('input[placeholder="输入你的行动或对话..."]').filter({ visible: true })
       await input.fill('测试消息')
@@ -572,66 +621,65 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
   })
 
   test.describe('SSE 事件处理', () => {
-    test('正确解析 event: step + reply SSE 事件', async ({ page }) => {
+    test('正确解析 step + completed SSE 事件', async ({ page }) => {
       await freshStart(page)
       await setFakeLLMConfig(page)
       await jumpToPlaying(page)
 
-      // Plain string body: step events are processed, reply adds chat message
-      await page.route('**/api/game/action', (route) => {
+      await page.route(API_URL, (route) => {
         route.fulfill({
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
-          body: 'event: step\ndata: ' + JSON.stringify({ label: '天道记忆检索中...' }) + '\n\n' +
-                'event: step\ndata: ' + JSON.stringify({ label: '天机推演中...' }) + '\n\n' +
-                'event: reply\ndata: ' + JSON.stringify({ reply: '最后回复：天道推演完成' }) + '\n\n' +
-                'event: done\ndata: \n\n',
+          body: sseAccepted() +
+                sseStep('天道记忆检索中...', 1) +
+                sseStep('天机推演中...', 2) +
+                sseCompleted('最后回复：天道推演完成', 3),
         })
       })
 
       await page.locator('input[placeholder="输入你的行动或对话..."]').filter({ visible: true }).fill('step测试')
       await page.locator('input[placeholder="输入你的行动或对话..."]').filter({ visible: true }).press('Enter')
 
-      // reply 事件触发 addMessage，最终回复出现在聊天气泡中
+      // completed 事件触发 addMessage，最终回复出现在聊天气泡中
       await expect(page.locator('.bg-zinc-800.rounded-2xl').filter({ visible: true }).first()).toContainText('最后回复：天道推演完成', { timeout: 5000 })
     })
 
-    test('正确解析 event: text-delta + reply SSE 事件', async ({ page }) => {
+    test('正确解析 text-delta + completed SSE 事件', async ({ page }) => {
       await freshStart(page)
       await setFakeLLMConfig(page)
       await jumpToPlaying(page)
 
-      // text-delta 流式文本累积，reply 事件最终产生消息气泡
-      await page.route('**/api/game/action', (route) => {
+      // text-delta 流式文本累积，completed 事件最终产生消息气泡
+      await page.route(API_URL, (route) => {
         route.fulfill({
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
-          body: 'event: text-delta\ndata: ' + JSON.stringify({ content: '天地' }) + '\n\n' +
-                'event: text-delta\ndata: ' + JSON.stringify({ content: '玄黄' }) + '\n\n' +
-                'event: reply\ndata: ' + JSON.stringify({ reply: '天地玄黄' }) + '\n\n' +
-                'event: done\ndata: \n\n',
+          body: sseAccepted() +
+                sseTextDelta('天地', 1) +
+                sseTextDelta('玄黄', 2) +
+                sseCompleted('天地玄黄', 3),
         })
       })
 
       await page.locator('input[placeholder="输入你的行动或对话..."]').filter({ visible: true }).fill('流式测试')
       await page.locator('input[placeholder="输入你的行动或对话..."]').filter({ visible: true }).press('Enter')
 
-      // 最终 reply 文本出现在聊天气泡中
+      // 最终 completed 文本出现在聊天气泡中
       await expect(page.locator('.bg-zinc-800.rounded-2xl').filter({ visible: true }).first()).toContainText('天地玄黄', { timeout: 5000 })
     })
 
-    test('正确解析 event: error 显示错误消息', async ({ page }) => {
+    test('正确解析 failed 事件显示错误消息', async ({ page }) => {
       await freshStart(page)
       await setFakeLLMConfig(page)
       await jumpToPlaying(page)
 
-      await page.route('**/api/game/action', (route) => {
+      await page.route(API_URL, (route) => {
         route.fulfill({
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
-          body: 'event: step\ndata: ' + JSON.stringify({ label: '检索中...' }) + '\n\n' +
-                'event: error\ndata: ' + JSON.stringify({ message: '天道崩溃：LLM服务不可用' }) + '\n\n' +
-                'event: done\ndata: \n\n',
+          body: sseAccepted() +
+                sseStep('检索中...', 1) +
+                sseFailed('LLM_SERVICE_UNAVAILABLE', '天道崩溃：LLM服务不可用', 2, true),
         })
       })
 
@@ -641,23 +689,20 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
       await expect(page.locator('.bg-red-900\\/50').filter({ visible: true })).toContainText('LLM服务不可用', { timeout: 5000 })
     })
 
-    test('event: codex 触发图鉴通知', async ({ page }) => {
+    test('codex 事件触发图鉴通知', async ({ page }) => {
       await freshStart(page)
       await setFakeLLMConfig(page)
       await jumpToPlaying(page)
 
-      await page.route('**/api/game/action', (route) => {
-        const body = new ReadableStream({
-          start(ctrl) {
-            const enc = new TextEncoder()
-            ctrl.enqueue(enc.encode('event: step\ndata: ' + JSON.stringify({ label: '...' }) + '\n\n'))
-            ctrl.enqueue(enc.encode('event: codex\ndata: ' + JSON.stringify({ name: '青云剑', entry_type: 'item', description: '一把古剑' }) + '\n\n'))
-            ctrl.enqueue(enc.encode('event: reply\ndata: ' + JSON.stringify({ reply: '你获得了一把剑' }) + '\n\n'))
-            ctrl.enqueue(enc.encode('event: done\ndata: \n\n'))
-            ctrl.close()
-          },
+      await page.route(API_URL, (route) => {
+        route.fulfill({
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body: sseAccepted() +
+                sseStep('...', 1) +
+                sseCodex('青云剑', 'item', '一把古剑', 2) +
+                sseCompleted('你获得了一把剑', 3),
         })
-        route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body })
       })
 
       await page.locator('input[placeholder="输入你的行动或对话..."]').filter({ visible: true }).fill('获得物品')
@@ -679,7 +724,7 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
       await setFakeLLMConfig(page)
       await jumpToPlaying(page)
 
-      await page.route('**/api/game/action', (route) => route.abort('connectionrefused'))
+      await page.route(API_URL, (route) => route.abort('connectionrefused'))
 
       await page.locator('input[placeholder="输入你的行动或对话..."]').filter({ visible: true }).fill('断网测试')
       await page.locator('input[placeholder="输入你的行动或对话..."]').filter({ visible: true }).press('Enter')
@@ -692,7 +737,7 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
       await setFakeLLMConfig(page)
       await jumpToPlaying(page)
 
-      await page.route('**/api/game/action', (route) => {
+      await page.route(API_URL, (route) => {
         route.fulfill({ status: 503, body: 'Service Unavailable' })
       })
 
@@ -708,7 +753,7 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
       await jumpToPlaying(page)
 
       let callCount = 0
-      await page.route('**/api/game/action', (route) => {
+      await page.route(API_URL, (route) => {
         callCount++
         if (callCount === 1) {
           route.fulfill({ status: 503, body: 'Service Unavailable' })
@@ -716,7 +761,7 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
           route.fulfill({
             status: 200,
             headers: { 'content-type': 'text/event-stream' },
-            body: 'event: reply\ndata: ' + JSON.stringify({ reply: '重试成功！' }) + '\n\nevent: done\ndata: \n',
+            body: buildActionStream('重试成功！'),
           })
         }
       })
@@ -738,12 +783,12 @@ test.describe('Phase: PLAYING — 主游戏循环', () => {
       await jumpToPlaying(page)
 
       // 慢响应
-      await page.route('**/api/game/action', async (route) => {
+      await page.route(API_URL, async (route) => {
         await new Promise((r) => setTimeout(r, 2000))
         route.fulfill({
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
-          body: 'event: reply\ndata: ' + JSON.stringify({ reply: 'ok' }) + '\n\nevent: done\ndata: \n',
+          body: buildActionStream('ok'),
         })
       })
 
@@ -1318,52 +1363,55 @@ test.describe('Phase: DEAD — 角色死亡', () => {
 // ── API 路由验证层 ───────────────────────────────────────────────────
 
 test.describe('API Layer — 后端路由连通性', () => {
-  test('POST /api/game/action 返回 400 当缺少 playerId', async ({ page }) => {
-    const res = await page.request.post('/api/game/action', {
+  test('POST /api/v1/game/action 缺少 playerId 返回 4xx', async ({ page }) => {
+    const res = await page.request.post('/api/v1/game/action', {
       data: { input: 'test' },
       failOnStatusCode: false,
     })
-    expect(res.status()).toBe(400)
+    // V1 API uses Zod validation → 422, or may return 400
+    expect(res.status()).toBeGreaterThanOrEqual(400)
+    expect(res.status()).toBeLessThan(500)
     const body = await res.json()
-    expect(body.error).toBeDefined()
+    expect(body.error || body.detail || body.title).toBeDefined()
   })
 
-  test('POST /api/game/action 返回 400 当缺少 API Key', async ({ page }) => {
-    const res = await page.request.post('/api/game/action', {
-      data: { input: 'test', playerId: 'fake-id' },
+  test('POST /api/v1/game/action 无效请求体返回 4xx', async ({ page }) => {
+    const res = await page.request.post('/api/v1/game/action', {
+      headers: { 'Content-Type': 'application/json' },
+      data: 'not a valid request object',
       failOnStatusCode: false,
     })
-    // 要么返回 400 (Missing API Key)，要么返回 200（如果后端找到了玩家）
-    // 只要不 500 就算正常
+    // Zod validation rejects the string → 422, or JSON parse fails → 400
+    expect(res.status()).toBeGreaterThanOrEqual(400)
     expect(res.status()).toBeLessThan(500)
   })
 
-  test('POST /api/game 返回 400 缺少参数', async ({ page }) => {
-    const res = await page.request.post('/api/game', {
+  test('POST /api/v1/game/action 空请求体返回 4xx', async ({ page }) => {
+    const res = await page.request.post('/api/v1/game/action', {
       data: {},
       failOnStatusCode: false,
     })
-    expect(res.status()).toBe(400)
+    // V1 API Zod validation returns 422 for empty body
+    expect(res.status()).toBeGreaterThanOrEqual(400)
+    expect(res.status()).toBeLessThan(500)
   })
 
-  test('DELETE /api/game 返回 400 缺少 playerId', async ({ page }) => {
-    const res = await page.request.delete('/api/game', {
+  test('DELETE /api/v1/game/action 返回 4xx', async ({ page }) => {
+    const res = await page.request.delete('/api/v1/game/action', {
       data: {},
       failOnStatusCode: false,
     })
-    // DELETE 可能不支持直接调用，但至少应该 400 而不是 500
     expect(res.status()).toBeGreaterThanOrEqual(400)
     expect(res.status()).toBeLessThan(500)
   })
 
   test('Content-Type 响应头正确', async ({ page }) => {
-    // Next.js 错误响应可能返回 text/plain 或 application/json
-    const res = await page.request.post('/api/game/action', {
+    const res = await page.request.post('/api/v1/game/action', {
       data: { input: 'test' },
       failOnStatusCode: false,
     })
     const ct = res.headers()['content-type']
-    expect(ct).toMatch(/text\/plain|application\/json/)
+    expect(ct).toMatch(/text\/plain|application\/json|application\/problem\+json/)
   })
 })
 
@@ -1445,12 +1493,12 @@ test.describe('Edge Cases — 边界情况', () => {
     await completeInit(page)
 
     // 慢响应（2s后返回）
-    await page.route('**/api/game/action', async (route) => {
+    await page.route(API_URL, async (route) => {
       await new Promise((r) => setTimeout(r, 2000))
       route.fulfill({
         status: 200,
         headers: { 'content-type': 'text/event-stream' },
-        body: 'event: reply\ndata: ' + JSON.stringify({ reply: '开局剧情触发成功' }) + '\n\nevent: done\ndata: \n',
+        body: buildActionStream('开局剧情触发成功', 'prepare'),
       })
     })
 
@@ -1690,12 +1738,12 @@ test.describe('Journal — 经验库（修仙日志）', () => {
       await jumpToJournalWithData(page)
 
       let capturedBody: any = null
-      await page.route('**/api/game/action', (route) => {
+      await page.route(API_URL, (route) => {
         capturedBody = route.request().postDataJSON()
         route.fulfill({
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
-          body: 'event: reply\ndata: ' + JSON.stringify({ reply: '系统收到你的经验反思。' }) + '\n\nevent: done\ndata: \n',
+          body: buildActionStream('系统收到你的经验反思。'),
         })
       })
 

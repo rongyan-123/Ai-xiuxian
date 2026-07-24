@@ -1,48 +1,61 @@
-上次对话记录 — 2026-07-23（Session 5 — Playwright E2E 重写 + 最终清理）
+上次对话记录 — 2026-07-23（Session 6 — Agent框架架构头脑风暴）
 ================================================================================
 
 【本轮任务】
-清理临时文件、重写 Playwright E2E 测试（修复假阳性）、运行完整测试套件、更新文档。
+用户发现当前项目只是简单function calling（4节点线性LangGraph），决定完全重写为正式Agent框架。
+参考：Codex/Claude Code生命周期、StudyHeaven教学Agent、LLM Wiki、GTA V/RDR2/觅长生。
 
-【Playwright E2E 重写 — 发现三个致命假阳性问题】
+【架构设计完成模块（14节，记录在 architecture-brainstorm-log.md）】
 
-原 e2e/api-robustness.spec.ts 存在三个关键 bug：
+1. 项目诊断 — 当前是固定流程，不是Agent
+2. 核心理念 — Agent = for循环 + 工具调用 + Done Tool + 临时消息
+3. NPC自治分级 — T3(完整Agent)/T2(混合)/T1(模板)/T0(宏观)，脑体分离
+4. 知识气泡 + 世界约束编译 — Region DM生成约束，NPC只感知周围
+5. 动态约束注入 — bound标志 + 概率叛逆(5-10%)
+6. 游戏模式 — 模拟器为主(hardcore)，可选爽文剧情流
+7. 横向时间执行 — 觅长生式，每小时检查点，所有NPC一起推进
+8. Agent循环状态机 — think→act→observe→re-think
+9. 循环修正 — 动态回合预算(simple=3, medium=8, complex=15) + 每步超时
+10. 工具五类定义 — 感知查询/世界行动/NPC行为/叙事输出/UI面板
+11. 完整工具目录 — 25个工具TypeScript接口 + 注册表(tool-catalog.ts)
+12. Region DM协议 — 三款大作调研(GTA V/RDR2/觅长生) + 五条铁律 + 6个职责
+13. 已完成vs待讨论 — 汇总表
 
-1. 输入定位器不匹配：
-   'textarea, [contenteditable="true"], input[type="text"]' 从来匹配不到
-   @base-ui/react 的 Input 组件（渲染为 <input data-slot="input">）
-   导致 sendMessage() 每次都静默跳过，测试从未真正执行输入
+【关键设计决策】
+- LLM是叙述者，不是世界创造者（World Authority Principle）
+- 工具结果ephemeral=本轮，回合结束即抛弃
+- NPC不能直接写世界（不能调世界行动工具）
+- Region DM每天2次LLM调用（约束+事件），不是每个NPC都调
+- 五级优先级中断（P0-P4，纯程序判断）
+- NPC模板化：原型 + 参数变异 = 个体差异
 
-2. page.route() 与 Next.js 16 Turbopack 不兼容：
-   Playwright 的 route 拦截无法捕获 Turbopack dev server 的 fetch() 请求
-   所有 route 都显示 Intercepted: false
+【已创建文件】
+- docs/architecture-brainstorm-log.md — 14节完整架构设计
+- src/server/contracts/tool-catalog.ts — 25个工具TypeScript定义
+- docs/开发计划-Agent框架重写.md — 7阶段开发计划
 
-3. 断言假通过：
-   expect(content).toBeTruthy() 永远通过（页面总有内容）
-   即使输入从未发送，测试也显示通过
+【已修改文件】
+- src/server/contracts/index.ts — 添加 tool-catalog 导出
+- CLAUDE.md — 添加"架构头脑风暴日志"强制规则（最高优先级）
 
-【重写方案】
-- INPUT_SELECTOR = '[data-slot="input"]'（匹配 @base-ui/react Input）
-- 改用 page.evaluate() 覆盖 window.fetch（绕过 Turbopack 限制）
-- 具体断言：toContain('青云山')、toMatch(/Connection|错误|失败|error/i)
-- getToPlayingState() 补充 phase: 'PLAYING'（之前缺失，页面停在角色创建）
-- sendMessage() 优雅处理移动端（input 不可见时 return false）
+【下一轮待讨论】
+1. Region DM完整协议（输入/输出格式、调度时序）
+2. 上下文压缩（几百回合后对话历史处理）
+3. 双模型架构（快速模型做判断 + 强力模型做叙事）
+4. 前端Agent可视化（玩家看到什么）
+5. 竖切实验（最短闭环验证架构可行性）
 
-【完整测试结果 2026-07-23】
+【用户消息摘要】
+- "当前项目只是function calling，需要重写为正式Agent框架"
+- "B方案不行，token消耗巨量"（反对每个NPC都跑LLM）
+- "NPC不能纯状态机，不然太死了"（需要LLM做决策）
+- "约束要动态加入变量，有规则破坏者才有趣"
+- "模拟器模式为主，难度可选"
+- "agent循环参考claude/codex/pi-agent"
+- 三次循环修正：逻辑问题(先查询后描述)、预算问题(动态)、超时问题(每步)
+- "玩家本质不操作工具，单纯语言输入"
+- "先把工具目录模块做完"
+- "参考觅长生/GTA5/大镖客的游戏界NPC设计"
+- "记到日志，写开发计划txt，明天再聊"
 
-| 层 | 测试数 | 文件数 | 状态 |
-|------|------|------|------|
-| Unit | 472 | 19 | 全部通过 |
-| Contract | 132 | 5 | 全部通过 |
-| Playwright Desktop | 14 | 1 | 全部通过 |
-| Playwright Mobile | 14 | 1 | 全部通过 |
-| **总计** | **632** | **25** | **全部通过** |
-
-【清理】
-- 删除 e2e/debug-mock.spec.ts（临时调试文件）
-
-【真正阻塞任务】
-- 12.3：迁移验证 — 需要 PostgreSQL（端口 5433）+ 遗留玩家数据快照
-- 12.4（integration 部分）：tests/integration/ 目录结构就绪，需要 PostgreSQL + Prisma 迁移
-
-632 tests 全绿。生产构建通过。所有代码级任务完成。
+================================================================================

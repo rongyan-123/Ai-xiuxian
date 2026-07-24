@@ -1,0 +1,41 @@
+修仙Agent框架重写 — 五层测试验证战役 完成日志
+============================================================
+开始: 2026-07-24
+完成: 2026-07-24
+
+第1层：契约测试 ✅
+  6文件，166测试全绿
+  验证项: SSE v2信封格式、9种事件类型、RFC 9457错误响应、响应头、终端事件唯一性
+
+第2层：单元测试增强 ✅
+  新增: structured-logging.test.ts (25测试)、feature-flags.test.ts (18测试)
+  全量: 22文件，545测试全绿（含新增43测试）
+
+第3层：集成测试 ✅
+  2文件全绿 (prisma-repositories.test.ts + smoke-agent-lifecycle.test.ts)
+  需要PostgreSQL xiuxian_test数据库
+
+第4层：浏览器冒烟测试 ✅
+  game.spec.ts: 186/186测试全绿
+  api-robustness.spec.ts: 28测试待适配v1 SSE格式（已记录技术债）
+  SSE格式迁移: event: reply/done/error → 新版envelope (accepted/text-delta/completed/failed)
+
+第5层：端到端全面验证 ✅
+  全量单元测试: 28文件, 711测试全绿
+  契约测试: 6文件, 166测试全绿
+  TypeScript类型检查: 新增代码零错误（预存错误: error-boundary jsdom, 集成测试ItemGrade）
+  技术债HACK注释已标注: agent-loop.ts闸门stub, tool-catalog.ts gateRules, rule-engine.ts as unknown as, error-boundary.test.tsx jsdom
+
+最终数据:
+  单元测试: 28文件, 711通过
+  契约测试: 6文件, 166通过
+  集成测试: 2文件, 通过
+  E2E测试: game.spec.ts 186通过
+  TypeScript: 新增代码零类型错误
+
+已知预存技术债:
+  - api-robustness.spec.ts 28测试需v1 SSE适配
+  - Prisma集成测试ItemGrade类型不匹配
+  - error-boundary.test.tsx jsdom事件传播
+  - agent-loop.ts能力闸门stub (Phase 2)
+  - rule-engine.ts as unknown as 类型强转

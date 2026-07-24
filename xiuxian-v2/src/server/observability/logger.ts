@@ -8,7 +8,6 @@
  * All object values are redacted before emission.
  */
 import { redact, type RedactionConfig } from './redaction'
-import type { RequestContext } from './request-context'
 
 export interface LoggerConfig {
   service: string
@@ -26,7 +25,7 @@ export interface Logger {
 }
 
 export interface LogContext {
-  requestContext?: RequestContext
+  requestContext?: { requestId: string; runId: string }
   err?: Error
   [key: string]: unknown
 }

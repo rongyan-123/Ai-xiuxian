@@ -29,11 +29,16 @@ function callWithoutArgs(name: string) {
 // ─── TESTS ─────────────────────────────────────────────────────────────────
 
 describe('Tool schemas — schema coverage', () => {
-  it('all 20 known tools are in TOOL_SCHEMAS', () => {
-    expect(KNOWN_TOOL_NAMES).toHaveLength(20)
+  it('all known tools (old + new) are in TOOL_SCHEMAS', () => {
+    expect(KNOWN_TOOL_NAMES.length).toBeGreaterThanOrEqual(20)
     expect(KNOWN_TOOL_NAMES).toContain('Backpack_additems')
     expect(KNOWN_TOOL_NAMES).toContain('Search_History')
     expect(KNOWN_TOOL_NAMES).toContain('Skip')
+    // New-catalog tools must also be present
+    expect(KNOWN_TOOL_NAMES).toContain('SearchArea')
+    expect(KNOWN_TOOL_NAMES).toContain('ModifyStats')
+    expect(KNOWN_TOOL_NAMES).toContain('ModifyInventory')
+    expect(KNOWN_TOOL_NAMES).toContain('ChangeLocation')
   })
 
   it('every known tool has a Zod schema', () => {

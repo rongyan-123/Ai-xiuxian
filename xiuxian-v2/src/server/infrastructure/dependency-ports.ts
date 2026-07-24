@@ -7,6 +7,8 @@
  */
 import type { EnvelopeEvent } from '../streaming/event-factory'
 
+export type { EnvelopeEvent }
+
 // ── LLM Provider Port ──────────────────────────────────────────────────
 
 export interface LLMProviderConfig {

@@ -8,6 +8,9 @@
  * - onError callback is invoked
  * - Async failures remain outside the boundary (design verification)
  * - Error boundary renders children normally when no error
+ *
+ * HACK: jsdom环境不支持React error boundary的error event传播，onClick中throw Error的测试会在jsdom层
+ * 被捕获导致unhandled error输出到stderr（测试本身通过）。迁移到happy-dom或Playwright component test后可解决。2026-07-24
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'

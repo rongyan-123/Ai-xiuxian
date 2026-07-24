@@ -225,9 +225,87 @@ const SkipArgs = z.object({
   reason: z.string(),
 })
 
-// ── Tool name → schema mapping ──────────────────────────────────────────
+// ── New-catalog tool schemas (perception queries, merged actions, NPC behaviors) ──
+
+const SearchAreaArgs = z.object({
+  zone: z.string().optional(),
+  type: z.string().optional(),
+})
+
+const ExamineObjectArgs = z.object({
+  target: z.string(),
+})
+
+const SenseDangerArgs = z.object({
+  radius: z.string().optional(),
+})
+
+const CheckNpcStateArgs = z.object({
+  npcId: z.string(),
+})
+
+const QueryRegionArgs = z.object({
+  region: z.string(),
+  aspects: z.array(z.string()).optional(),
+})
+
+const LookAroundArgs = z.object({})
+
+const ModifyInventoryArgs = z.object({
+  who: z.string().optional(),
+  additions: z.array(z.object({
+    name: z.string(),
+    type: z.string().optional(),
+    grade: z.string().optional(),
+    description: z.string().optional(),
+    count: z.number(),
+    value: z.number().optional(),
+  })).optional(),
+  removals: z.array(z.object({
+    name: z.string(),
+    count: z.number(),
+  })).optional(),
+  reason: z.string().optional(),
+})
+
+const TriggerCombatArgs = z.object({
+  participants: z.array(z.object({
+    side: z.enum(['a', 'b']),
+    entities: z.array(z.string()),
+  })),
+  context: z.string(),
+  environment: z.string().optional(),
+})
+
+const AdvanceTimeArgs = z.object({
+  duration: z.string(),
+  activity: z.string(),
+})
+
+const GenerateDailyPlanArgs = z.object({})
+
+const DecideReactionArgs = z.object({
+  event: z.string(),
+  source: z.string().optional(),
+})
+
+const FormMemoryArgs = z.object({
+  content: z.string(),
+  importance: z.number().optional(),
+  tags: z.array(z.string()).optional(),
+})
+
+const GenerateDialogueArgs = z.object({
+  interlocutor: z.string(),
+  context: z.string().optional(),
+})
+
+const SelfReflectionArgs = z.object({})
+
+// ── Tool name → schema mapping (old + new) ──────────────────────────────
 
 export const TOOL_SCHEMAS: Record<string, z.ZodTypeAny> = {
+  // Old names (backward compat)
   Backpack_additems: BackpackAddItemsArgs,
   Backpack_reduceitems: BackpackReduceItemsArgs,
   Consume_Item: ConsumeItemArgs,
@@ -248,6 +326,38 @@ export const TOOL_SCHEMAS: Record<string, z.ZodTypeAny> = {
   Create_Foreshadowing: CreateForeshadowingArgs,
   Search_History: SearchHistoryArgs,
   Skip: SkipArgs,
+  // New canonical names
+  SearchArea: SearchAreaArgs,
+  ExamineObject: ExamineObjectArgs,
+  SenseDanger: SenseDangerArgs,
+  CheckNpcState: CheckNpcStateArgs,
+  QueryRegion: QueryRegionArgs,
+  RecallMemory: SearchHistoryArgs,
+  LookAround: LookAroundArgs,
+  ChangeLocation: ChangeLocationArgs,
+  ModifyStats: ModifyStatsArgs,
+  ModifyInventory: ModifyInventoryArgs,
+  UpdateRelationship: UpdateRelationshipArgs,
+  TriggerCombat: TriggerCombatArgs,
+  CreateSituation: UpdateSituationArgs,
+  ResolveSituation: UpdateSituationArgs,
+  CreateForeshadowing: CreateForeshadowingArgs,
+  AdvanceTime: AdvanceTimeArgs,
+  GenerateNpc: GenerateNPCArgs,
+  GenerateLocation: GenerateLocationArgs,
+  AddJournalEntry: WriteJournalArgs,
+  AddCodexEntry: WriteCodexArgs,
+  GenerateDailyPlan: GenerateDailyPlanArgs,
+  DecideReaction: DecideReactionArgs,
+  FormMemory: FormMemoryArgs,
+  GenerateDialogue: GenerateDialogueArgs,
+  SelfReflection: SelfReflectionArgs,
+  ConsumeItem: ConsumeItemArgs,
+  ModifyTechniques: ModifyTechniquesArgs,
+  ModifyTraits: ModifyTraitsArgs,
+  CheckBreakthrough: CheckBreakthroughArgs,
+  GenerateSect: GenerateSectArgs,
+  GenerateItem: GenerateItemArgs,
 }
 
 export type ToolName = keyof typeof TOOL_SCHEMAS
@@ -366,13 +476,14 @@ export function validateToolCalls(
 // ── Contradiction detection ─────────────────────────────────────────────
 
 function detectContradictions(
-  calls: Array<{ name: ToolName; args: Record<string, unknown> }>,
+  calls: Array<{ name: string; args: Record<string, unknown> }>,
 ): ToolValidationError | null {
-  const modifyStatsCall = calls.find((c) => c.name === 'Modify_Stats')
-  const breakthroughCall = calls.find((c) => c.name === 'Check_Breakthrough')
-  const consumeCall = calls.find((c) => c.name === 'Consume_Item')
+  const modifyStatsCall = calls.find((c) => c.name === 'Modify_Stats' || c.name === 'ModifyStats')
+  const breakthroughCall = calls.find((c) => c.name === 'Check_Breakthrough' || c.name === 'CheckBreakthrough')
+  const consumeCall = calls.find((c) => c.name === 'Consume_Item' || c.name === 'ConsumeItem')
   const backpackAddCall = calls.find((c) => c.name === 'Backpack_additems')
   const backpackReduceCall = calls.find((c) => c.name === 'Backpack_reduceitems')
+  const modifyInventoryCall = calls.find((c) => c.name === 'ModifyInventory')
 
   // Contradiction: healing AND damaging in same Modify_Stats
   if (modifyStatsCall) {
@@ -383,7 +494,7 @@ function detectContradictions(
     }
   }
 
-  // Contradiction: adding AND consuming same item in one turn
+  // Contradiction: adding AND consuming/removing same item in one turn
   if (backpackAddCall && backpackReduceCall) {
     const addedItems = (backpackAddCall.args.items as Array<{ name: string }>) || []
     const reducedItems = (backpackReduceCall.args.items as Array<{ name: string }>) || []
@@ -412,10 +523,25 @@ function detectContradictions(
       }
     }
   }
+  // ModifyInventory self-contradiction check
+  if (modifyInventoryCall) {
+    const additions = (modifyInventoryCall.args.additions as Array<{ name: string }>) || []
+    const removals = (modifyInventoryCall.args.removals as Array<{ name: string }>) || []
+    const addNames = new Set(additions.map((i) => i.name))
+    const removeNames = new Set(removals.map((i) => i.name))
+    const overlap = [...addNames].filter((n) => removeNames.has(n))
+    if (overlap.length > 0) {
+      return {
+        valid: false,
+        code: 'CONTRADICTORY_TOOLS',
+        message: `Cannot add and remove the same item(s) in one turn: ${overlap.join(', ')}`,
+      }
+    }
+  }
 
-  // Contradiction: breakthrough success with realm downgrade via Modify_Mental
+  // Contradiction: breakthrough success with realm downgrade via Modify_Mental/ModifyStats
   if (breakthroughCall && breakthroughCall.args.result === 'SUCCESS') {
-    const mentalCall = calls.find((c) => c.name === 'Modify_Mental')
+    const mentalCall = calls.find((c) => c.name === 'Modify_Mental' || c.name === 'ModifyStats')
     if (mentalCall?.args.realm) {
       const newRealm = breakthroughCall.args.new_realm as string | undefined
       const mentalRealm = mentalCall.args.realm as string

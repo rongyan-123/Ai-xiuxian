@@ -107,6 +107,32 @@ function generateCodexId(prefix: string, now: () => number, random: () => string
   return `${prefix}-${now().toString(36)}${random()}`
 }
 
+/** Normalize old tool names to canonical names (no-op for already-canonical names). */
+function normalizeToolName(name: string): string {
+  const ALIASES: Record<string, string> = {
+    Backpack_additems: 'ModifyInventory',
+    Backpack_reduceitems: 'ModifyInventory',
+    Consume_Item: 'ConsumeItem',
+    Modify_Stats: 'ModifyStats',
+    Modify_Techniques: 'ModifyTechniques',
+    Modify_Traits: 'ModifyTraits',
+    Modify_Mental: 'ModifyStats',
+    Update_Relationship: 'UpdateRelationship',
+    Change_Location: 'ChangeLocation',
+    Check_Breakthrough: 'CheckBreakthrough',
+    Generate_NPC: 'GenerateNpc',
+    Generate_Location: 'GenerateLocation',
+    Generate_Sect: 'GenerateSect',
+    Generate_Item: 'GenerateItem',
+    Write_Codex: 'AddCodexEntry',
+    Write_Journal: 'AddJournalEntry',
+    Update_Situation: 'UpdateSituation',
+    Create_Foreshadowing: 'CreateForeshadowing',
+    Search_History: 'RecallMemory',
+  }
+  return ALIASES[name] ?? name
+}
+
 function evaluateToolCall(
   name: string,
   args: Record<string, unknown>,
@@ -121,55 +147,83 @@ function evaluateToolCall(
   now: () => number,
   random: () => string,
 ): void {
-  // ── Backpack_additems ──────────────────────────────────────────────
+  const canonical = normalizeToolName(name)
 
-  if (name === 'Backpack_additems' && args.items) {
-    const items = args.items as Array<Record<string, unknown>>
-    for (const item of items) {
-      const existing = newInventory.find((i) => i.name === item.name)
-      if (existing) {
-        existing.count += (item.count as number)
-      } else {
-        newInventory.push({
-          ...item,
-          id: (item.id as string) || generateItemId(now, random),
-        } as unknown as IInventoryItem)
+  // ── ModifyInventory (was Backpack_additems / Backpack_reduceitems) ──
+
+  if (canonical === 'ModifyInventory') {
+    const isOldReduce = name === 'Backpack_reduceitems'
+    const isOldAdd = name === 'Backpack_additems'
+
+    // Additions (new API uses `additions`, old API uses `items` with Backpack_additems)
+    if (!isOldReduce && (args.additions || (isOldAdd && args.items))) {
+      const items = (args.additions || args.items) as Array<Record<string, unknown>>
+      for (const item of items) {
+        const existing = newInventory.find((i) => i.name === item.name)
+        if (existing) {
+          existing.count += (item.count as number)
+        } else {
+          newInventory.push({
+            ...item,
+            id: (item.id as string) || generateItemId(now, random),
+          // HACK: as unknown as 类型强转绕过IInventoryItem严格校验，因Prisma schema的inventory字段为Json类型，运行时形状无法静态保证。Phase 2引入Zod runtime校验后移除。2026-07-24
+          } as unknown as IInventoryItem)
+        }
       }
+      deltas.addedItems = items
     }
-    deltas.addedItems = items
-  }
-
-  // ── Backpack_reduceitems / Consume_Item ────────────────────────────
-
-  if (
-    (name === 'Backpack_reduceitems' || name === 'Consume_Item') &&
-    args.items
-  ) {
-    const items = args.items as Array<Record<string, unknown>>
-    for (const item of items) {
-      const idx = newInventory.findIndex((i) => i.name === item.name)
-      if (idx !== -1) {
-        newInventory[idx].count -= (item.count as number)
-        if (newInventory[idx].count <= 0) newInventory.splice(idx, 1)
+    // Removals (new API uses `removals`, old Backpack_reduceitems uses `items`)
+    if (args.removals || (isOldReduce && args.items)) {
+      const items = (args.removals || args.items) as Array<Record<string, unknown>>
+      for (const item of items) {
+        const idx = newInventory.findIndex((i) => i.name === item.name)
+        if (idx !== -1) {
+          newInventory[idx].count -= (item.count as number)
+          if (newInventory[idx].count <= 0) newInventory.splice(idx, 1)
+        }
       }
+      deltas.reducedItems = items
     }
-    deltas.reducedItems = items
   }
 
-  if (name === 'Consume_Item' && (args.mp_cost as number) && (args.mp_cost as number) > 0) {
-    newStats.mp.current = Math.max(0, newStats.mp.current - (args.mp_cost as number))
-    deltas.mpCost = args.mp_cost
+  // ── ConsumeItem (was Consume_Item) ──────────────────────────────────
+
+  if (canonical === 'ConsumeItem') {
+    if (args.items) {
+      const items = args.items as Array<Record<string, unknown>>
+      for (const item of items) {
+        const idx = newInventory.findIndex((i) => i.name === item.name)
+        if (idx !== -1) {
+          newInventory[idx].count -= (item.count as number)
+          if (newInventory[idx].count <= 0) newInventory.splice(idx, 1)
+        }
+      }
+      deltas.reducedItems = items
+    }
+    if ((args.mp_cost as number) && (args.mp_cost as number) > 0) {
+      newStats.mp.current = Math.max(0, newStats.mp.current - (args.mp_cost as number))
+      deltas.mpCost = args.mp_cost
+    }
   }
 
-  // ── Modify_Stats ───────────────────────────────────────────────────
+  // ── ModifyStats (was Modify_Stats + Modify_Mental) ──────────────────
 
-  if (name === 'Modify_Stats') {
+  if (canonical === 'ModifyStats') {
     applyModifyStats(args, newStats, deltas)
+    // Handle Modify_Mental-only fields (not covered by applyModifyStats)
+    if (args.emotion) newStats.emotion = args.emotion as string
+    if (args.mental_state) newStats.mental_state = args.mental_state as string
+    if (args.alignment) newStats.alignment = args.alignment as ICharacterStats['alignment']
+    if (args.sect) newStats.sect = args.sect as string
+    if (args.spiritual_root) newStats.spiritual_root = args.spiritual_root as string
+    if (args.realm) newStats.realm = args.realm as string
+    if (args.race) newStats.race = args.race as string
+    deltas.mental = args
   }
 
-  // ── Modify_Techniques ──────────────────────────────────────────────
+  // ── ModifyTechniques (was Modify_Techniques) ────────────────────────
 
-  if (name === 'Modify_Techniques') {
+  if (canonical === 'ModifyTechniques') {
     if (!newStats.techniques) {
       newStats.techniques = { main: '', combat: [], movement: '', support: [] }
     }
@@ -183,9 +237,9 @@ function evaluateToolCall(
     deltas.techniques = t
   }
 
-  // ── Modify_Traits ──────────────────────────────────────────────────
+  // ── ModifyTraits (was Modify_Traits) ────────────────────────────────
 
-  if (name === 'Modify_Traits') {
+  if (canonical === 'ModifyTraits') {
     if (args.add_talents) {
       newStats.talents = [...(newStats.talents || []), ...(args.add_talents as string[])]
     }
@@ -205,52 +259,34 @@ function evaluateToolCall(
     deltas.traits = newStats.traits
   }
 
-  // ── Modify_Mental ──────────────────────────────────────────────────
+  // ── UpdateRelationship (was Update_Relationship) ────────────────────
 
-  if (name === 'Modify_Mental') {
-    if (args.emotion) newStats.emotion = args.emotion as string
-    if (args.mental_state) newStats.mental_state = args.mental_state as string
-    if (args.reputation_change) {
-      newStats.reputation += args.reputation_change as number
-    }
-    if (args.state_of_mind_change) {
-      newStats.state_of_mind = (newStats.state_of_mind || 50) + (args.state_of_mind_change as number)
-    }
-    if (args.alignment) newStats.alignment = args.alignment as ICharacterStats['alignment']
-    if (args.sect) newStats.sect = args.sect as string
-    if (args.spiritual_root) newStats.spiritual_root = args.spiritual_root as string
-    if (args.realm) newStats.realm = args.realm as string
-    if (args.race) newStats.race = args.race as string
-    deltas.mental = args
-  }
-
-  // ── Update_Relationship ────────────────────────────────────────────
-
-  if (name === 'Update_Relationship') {
-    relationships[args.npc_name as string] =
-      (relationships[args.npc_name as string] || 0) + (args.change as number)
+  if (canonical === 'UpdateRelationship') {
+    const npcName = (args.npc_name || args.entityB) as string
+    const delta = (args.change || args.delta) as number
+    relationships[npcName] = (relationships[npcName] || 0) + delta
     deltas.relationships = relationships
   }
 
-  // ── Change_Location ────────────────────────────────────────────────
+  // ── ChangeLocation (was Change_Location) ────────────────────────────
 
-  if (name === 'Change_Location') {
-    deltas.location = args.location
+  if (canonical === 'ChangeLocation') {
+    deltas.location = args.location || args.to
   }
 
-  // ── Check_Breakthrough ─────────────────────────────────────────────
+  // ── CheckBreakthrough (was Check_Breakthrough) ──────────────────────
 
-  if (name === 'Check_Breakthrough') {
+  if (canonical === 'CheckBreakthrough') {
     if (args.result === 'SUCCESS' && args.new_realm) {
       newStats.realm = args.new_realm as string
     }
     deltas.breakthrough = args
   }
 
-  // ── Generate_NPC → codex ───────────────────────────────────────────
+  // ── GenerateNpc (was Generate_NPC) ──────────────────────────────────
 
-  if (name === 'Generate_NPC' && args.npcs) {
-    const npcs = args.npcs as Array<Record<string, unknown>>
+  if (canonical === 'GenerateNpc' && (args.npcs || args.npc)) {
+    const npcs = (args.npcs || [args.npc]) as Array<Record<string, unknown>>
     for (const npc of npcs) {
       const parts = [npc.description as string]
       if (npc.realm) parts.push(`[${npc.realm}]`)
@@ -267,10 +303,10 @@ function evaluateToolCall(
     }
   }
 
-  // ── Generate_Location → codex ──────────────────────────────────────
+  // ── GenerateLocation (was Generate_Location) ────────────────────────
 
-  if (name === 'Generate_Location' && args.locations) {
-    const locs = args.locations as Array<Record<string, unknown>>
+  if (canonical === 'GenerateLocation' && (args.locations || args.location)) {
+    const locs = (args.locations || [args.location]) as Array<Record<string, unknown>>
     for (const loc of locs) {
       const parts = [loc.description as string]
       if (loc.danger_level) parts.push(`[${loc.danger_level}]`)
@@ -301,10 +337,10 @@ function evaluateToolCall(
     }
   }
 
-  // ── Generate_Sect → codex ──────────────────────────────────────────
+  // ── GenerateSect (was Generate_Sect) ────────────────────────────────
 
-  if (name === 'Generate_Sect' && args.sects) {
-    const sects = args.sects as Array<Record<string, unknown>>
+  if (canonical === 'GenerateSect' && (args.sects || args.sect)) {
+    const sects = (args.sects || [args.sect]) as Array<Record<string, unknown>>
     for (const sect of sects) {
       const parts = [sect.description as string]
       if (sect.alignment) parts.push(`[${sect.alignment}]`)
@@ -321,10 +357,10 @@ function evaluateToolCall(
     }
   }
 
-  // ── Generate_Item → codex ──────────────────────────────────────────
+  // ── GenerateItem (was Generate_Item) ────────────────────────────────
 
-  if (name === 'Generate_Item' && args.items) {
-    const items = args.items as Array<Record<string, unknown>>
+  if (canonical === 'GenerateItem' && (args.items || args.item)) {
+    const items = (args.items || [args.item]) as Array<Record<string, unknown>>
     for (const item of items) {
       const parts = [item.description as string]
       if (item.grade) parts.push(`[${item.grade}]`)
@@ -340,50 +376,71 @@ function evaluateToolCall(
     }
   }
 
-  // ── Write_Codex ────────────────────────────────────────────────────
+  // ── AddCodexEntry (was Write_Codex) ─────────────────────────────────
 
-  if (name === 'Write_Codex') {
+  if (canonical === 'AddCodexEntry') {
     newCodex.push({
       id: generateCodexId('cv', now, random),
       name: args.name as string,
-      entry_type: args.entry_type as string,
+      entry_type: (args.entry_type || args.entryType) as string,
       description: args.description as string,
       metadata: (args.metadata as Record<string, unknown>) || {},
       timestamp: now(),
     })
     deltas.codex = {
       name: args.name,
-      entry_type: args.entry_type,
+      entry_type: args.entry_type || args.entryType,
       description: args.description,
       metadata: (args.metadata as Record<string, unknown>) || {},
       timestamp: now(),
     }
   }
 
-  // ── Write_Journal ──────────────────────────────────────────────────
+  // ── AddJournalEntry (was Write_Journal) ─────────────────────────────
 
-  if (name === 'Write_Journal') {
+  if (canonical === 'AddJournalEntry') {
     deltas.journal = {
       title: args.title,
       content: args.content,
-      entry_type: args.entry_type || 'general',
+      entry_type: args.entry_type || args.entryType || 'general',
       timestamp: now(),
     }
   }
 
-  // ── Update_Situation ───────────────────────────────────────────────
+  // ── UpdateSituation / CreateSituation / ResolveSituation ────────────
 
-  if (name === 'Update_Situation') {
+  if (canonical === 'UpdateSituation') {
     applyUpdateSituation(args, newSituations, deltas, turnEstimate, now, random)
   }
 
-  // ── Create_Foreshadowing ───────────────────────────────────────────
+  // CreateSituation: forward to UpdateSituation with action='create'
+  if (canonical === 'CreateSituation') {
+    applyUpdateSituation(
+      { ...args, action: 'create' },
+      newSituations, deltas, turnEstimate, now, random,
+    )
+  }
 
-  if (name === 'Create_Foreshadowing') {
+  // ResolveSituation: forward to UpdateSituation
+  if (canonical === 'ResolveSituation') {
+    const action = args.action || 'end'
+    applyUpdateSituation(
+      { ...args, action, situation_id: args.situationId || args.situation_id },
+      newSituations, deltas, turnEstimate, now, random,
+    )
+  }
+
+  // ── CreateForeshadowing ─────────────────────────────────────────────
+
+  if (canonical === 'CreateForeshadowing') {
     applyCreateForeshadowing(args, newForeshadowings, newSituations, deltas, turnEstimate, now, random)
   }
 
-  // Search_History — read-only, no state change
+  // ── Perception query tools & other read-only tools ──────────────────
+  // SearchArea, ExamineObject, SenseDanger, CheckNpcState, QueryRegion,
+  // RecallMemory, LookAround, TriggerCombat, AdvanceTime, Skip
+  // GenerateDailyPlan, DecideReaction, FormMemory, GenerateDialogue, SelfReflection
+  // → Read-only or handled elsewhere; no rule-engine state change needed.
 }
 
 // ─── Helpers (internal) ────────────────────────────────────────────────────

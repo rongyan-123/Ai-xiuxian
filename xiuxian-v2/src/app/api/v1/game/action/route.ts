@@ -21,12 +21,22 @@ export const dynamic = 'force-dynamic'
 
 // ─── SSE Event Sink ──────────────────────────────────────────────────────
 
-function createSSEEventSink(controller: ReadableStreamDefaultController<Uint8Array>): EventSink {
+function createSSEEventSink(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  requestId: string,
+): EventSink {
   let closed = false
 
   function writeSSE(data: string): void {
     if (!closed) {
       controller.enqueue(new TextEncoder().encode(data))
+    }
+  }
+
+  function closeStream(): void {
+    if (!closed) {
+      closed = true
+      controller.close()
     }
   }
 
@@ -36,24 +46,48 @@ function createSSEEventSink(controller: ReadableStreamDefaultController<Uint8Arr
       writeSSE(line)
     },
     complete(): void {
-      if (!closed) {
-        writeSSE('data: {"type":"done"}\n\n')
-        closed = true
-        controller.close()
-      }
+      closeStream()
     },
     fail(error: { code: string; message: string; retryable: boolean }): void {
       if (!closed) {
-        writeSSE(`data: ${JSON.stringify({ type: 'failed', ...error })}\n\n`)
-        closed = true
-        controller.close()
+        const envelope: EnvelopeEvent = {
+          protocolVersion: '1.0',
+          requestId,
+          runId: requestId, // runId not yet assigned; use requestId for correlation
+          sequence: 0,
+          occurredAt: new Date().toISOString(),
+          type: 'failed',
+          payload: {
+            type: `https://api.xiuxian.com/errors/${error.code.toLowerCase().replace(/_/g, '-')}`,
+            title: error.code,
+            status: error.retryable ? 503 : 422,
+            detail: error.message,
+            code: error.code,
+            requestId,
+            retryable: error.retryable,
+          },
+        }
+        writeSSE(`data: ${JSON.stringify(envelope)}\n\n`)
+        closeStream()
       }
     },
     cancel(reason?: string): void {
       if (!closed) {
-        writeSSE(`data: ${JSON.stringify({ type: 'cancelled', reason })}\n\n`)
-        closed = true
-        controller.close()
+        const envelope: EnvelopeEvent = {
+          protocolVersion: '1.0',
+          requestId,
+          runId: requestId,
+          sequence: 0,
+          occurredAt: new Date().toISOString(),
+          type: 'cancelled',
+          payload: {
+            requestId,
+            runId: requestId,
+            reason: reason ?? 'Stream cancelled',
+          },
+        }
+        writeSSE(`data: ${JSON.stringify(envelope)}\n\n`)
+        closeStream()
       }
     },
   }
@@ -148,71 +182,84 @@ export async function POST(req: Request): Promise<Response> {
       const clock = createFakeClock(Date.now())
       const idGen = createIdGenerator()
 
-      // FIXME: Replace fakes with real implementations when DB/LLM available
-      // For now, we use the same fakes from tests — real adapters will be
-      // wired in once PostgreSQL and LLM credentials are configured.
-      const { createFakePlayerRepository } = await import('@/server/infrastructure/fake-repositories')
-      const { createFakeTurnExecutionRepository } = await import('@/server/infrastructure/fake-repositories')
-      const { createFakeOutboxRepository } = await import('@/server/infrastructure/fake-repositories')
       const { createFakeRAGProvider } = await import('@/server/infrastructure/rag-adapter')
       const { createFakeSummaryProvider } = await import('@/server/infrastructure/rag-adapter')
       const { createLLMAdapter } = await import('@/server/infrastructure/llm-adapter')
       const { createRetryPolicy } = await import('@/server/infrastructure/adapters')
 
-      const eventSink = createSSEEventSink(controller)
+      const eventSink = createSSEEventSink(controller, requestId)
       const retryPolicy = createRetryPolicy({ maxAttempts: 3, baseDelayMs: 1000, maxDelayMs: 30000, jitterFactor: 0.3 })
 
-      // Seed a player if one doesn't exist (development convenience)
-      let playerRepo = createFakePlayerRepository()
-      let player = await playerRepo.findById(playerId)
-      if (!player) {
-        // Create a default player for testing — in production this would
-        // reject with PLAYER_NOT_FOUND
-        const defaultPlayer = {
-          id: playerId,
-          status: 'ALIVE' as const,
-          name: playerName,
-          gender: '男',
-          version: 0,
-          stats: {
-            hp: { current: 100, max: 100, status_desc: '健康' },
-            mp: { current: 50, max: 50, status_desc: '充足' },
-            spirit: { value: 5, desc: '凡识' },
-            realm: '练气期一层',
-            age: { current: 18, max: 120 },
-            race: '人族',
-            alignment: '正道' as const,
-            sect: '散修',
-            spiritual_root: '金灵根',
-            mental_state: '正常',
-            reputation: 0,
-            emotion: '平静',
-            state_of_mind: 80,
-            fortune: 50,
-            karma: 0,
-            techniques: { main: '基础吐纳', combat: [], movement: '步行', support: [] },
-            shield: { current: 0, max: 50 },
-            talents: [],
-            traits: [],
-          },
-          inventory: [],
-          codex: [],
-          relationships: {},
-          situations: [],
-          foreshadowings: [],
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
+      // Resolve repositories: use Prisma/PostgreSQL when DATABASE_URL is set,
+      // fall back to in-memory fakes for development without a database.
+      const dbUrl = process.env.DATABASE_URL
+
+      let playerRepo: import('@/server/infrastructure/ports').PlayerRepository
+      let turnRepo: import('@/server/infrastructure/ports').TurnExecutionRepository
+      let outboxRepo: import('@/server/infrastructure/ports').OutboxRepository
+
+      if (dbUrl) {
+        const { PrismaClient } = await import('@prisma/client')
+        const { PrismaPg } = await import('@prisma/adapter-pg')
+        const repos = await import('@/server/infrastructure/prisma-repositories')
+
+        const prisma = new PrismaClient({ adapter: new PrismaPg(dbUrl) })
+        playerRepo = repos.createPrismaPlayerRepository(prisma)
+        turnRepo = repos.createPrismaTurnExecutionRepository(prisma)
+        outboxRepo = repos.createPrismaOutboxRepository(prisma)
+      } else {
+        const fakes = await import('@/server/infrastructure/fake-repositories')
+        playerRepo = fakes.createFakePlayerRepository()
+        turnRepo = fakes.createFakeTurnExecutionRepository()
+        outboxRepo = fakes.createFakeOutboxRepository()
+
+        // Seed a default player for development convenience (fake mode only)
+        let player = await playerRepo.findById(playerId)
+        if (!player) {
+          const defaultPlayer = {
+            id: playerId,
+            status: 'ALIVE' as const,
+            name: playerName,
+            gender: '男',
+            version: 0,
+            stats: {
+              hp: { current: 100, max: 100, status_desc: '健康' },
+              mp: { current: 50, max: 50, status_desc: '充足' },
+              spirit: { value: 5, desc: '凡识' },
+              realm: '练气期一层',
+              age: { current: 18, max: 120 },
+              race: '人族',
+              alignment: '正道' as const,
+              sect: '散修',
+              spiritual_root: '金灵根',
+              mental_state: '正常',
+              reputation: 0,
+              emotion: '平静',
+              state_of_mind: 80,
+              fortune: 50,
+              karma: 0,
+              techniques: { main: '基础吐纳', combat: [], movement: '步行', support: [] },
+              shield: { current: 0, max: 50 },
+              talents: [],
+              traits: [],
+            },
+            inventory: [],
+            codex: [],
+            relationships: {},
+            situations: [],
+            foreshadowings: [],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          }
+          playerRepo = fakes.createFakePlayerRepository([defaultPlayer])
         }
-        // Directly seed the fake repo and use it as the player repo
-        playerRepo = createFakePlayerRepository([defaultPlayer])
-        player = await playerRepo.findById(playerId)
       }
 
       await executeGameTurn(
         {
           playerRepo,
-          turnRepo: createFakeTurnExecutionRepository(),
-          outboxRepo: createFakeOutboxRepository(),
+          turnRepo,
+          outboxRepo,
           llmProvider: createLLMAdapter({
             retryPolicy,
             clock,

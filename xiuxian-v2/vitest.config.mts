@@ -9,5 +9,6 @@ export default defineConfig({
     include: ['src/**/*.test.{ts,tsx}', 'tests/**/*.test.{ts,tsx}'],
     exclude: ['node_modules', 'e2e/**', '.next/**'],
     globals: true,
+    fileParallelism: false,
   },
 })
