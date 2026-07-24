@@ -301,6 +301,7 @@ export async function agentLoop(
 
   // ── Step 4: RAG context (degradation-tolerant) ───────────────────────
   let ragContext = ''
+  emit('step', { label: '[RAG] 检索相关知识中...' })
   try {
     const ragResult = await ragProvider.search(request.input, 5, request.signal)
     if (ragResult.ok && ragResult.results.length > 0) {
@@ -315,8 +316,14 @@ export async function agentLoop(
       playerId: request.playerId,
       result_count: ragResult.ok ? ragResult.results.length : 0,
     })
+    if (ragResult.ok && ragResult.results.length > 0) {
+      emit('step', { label: `Executed [RAG] 检索完成 — 找到 ${ragResult.results.length} 条相关知识` })
+    } else {
+      emit('step', { label: 'Executed [RAG] 检索完成 — 未找到相关知识' })
+    }
   } catch {
     // RAG is non-critical
+    emit('step', { label: 'Executed [RAG] 检索跳过 — RAG服务不可用' })
     agentLogger.log({
       timestamp: clock.iso(),
       event: 'turn.rag_complete',
@@ -411,6 +418,11 @@ export async function agentLoop(
     })
 
     // ── 7b. Call LLM with streaming ────────────────────────────────────
+    emit('step', {
+      label: state.iteration === 0
+        ? '[思考] AI正在分析你的输入...'
+        : `[思考] AI正在推理... (第${state.iteration + 1}轮)`,
+    })
     const llmCallStartedAt = clock.now()
     agentLogger.log({
       timestamp: clock.iso(),
@@ -489,6 +501,9 @@ export async function agentLoop(
     // ── 7e. Gate check + validate + execute tools ──────────────────────
     state.toolResults = []
 
+    const toolNames = response.toolCalls.map(tc => tc.name).join(', ')
+    emit('step', { label: `Executed [工具] AI决定调用: ${toolNames}` })
+
     // Validate all tool calls first
     agentLogger.log({
       timestamp: clock.iso(),
@@ -509,6 +524,7 @@ export async function agentLoop(
     )
 
     if (!validation.valid) {
+      emit('step', { label: `[验证] 工具调用校验失败: ${validation.message}` })
       agentLogger.log({
         timestamp: clock.iso(),
         event: 'turn.failed',
@@ -538,8 +554,10 @@ export async function agentLoop(
 
     for (const tc of response.toolCalls) {
       // Gate check
+      emit('step', { label: `[Node] ${tc.name} — 校验权限...` })
       const gateResult = capabilityGate(tc.name, tc.arguments)
       if (!gateResult.allowed) {
+        emit('step', { label: `[Node] ${tc.name} — 被闸门拦截: ${gateResult.reason ?? '无权限'}` })
         state.toolResults.push({
           name: tc.name,
           result: { blocked: true, reason: gateResult.reason },
@@ -548,6 +566,7 @@ export async function agentLoop(
       }
 
       // Apply tool through rule engine
+      emit('step', { label: `Executed [工具] ${tc.name} — 执行中...` })
       const toolCalls = [{ name: tc.name, args: tc.arguments }]
       const engineResult = processRuleEngine(
         toolCalls,
@@ -580,6 +599,26 @@ export async function agentLoop(
         name: tc.name,
         result: engineResult.deltas,
       })
+
+      // Emit step with result summary
+      const deltaKeys = Object.keys(engineResult.deltas)
+      const deltaDesc = deltaKeys.length > 0
+        ? deltaKeys.map(k => `${k}: ${JSON.stringify(engineResult.deltas[k])}`).join(', ')
+        : '无变化'
+      emit('step', { label: `Executed [工具] ${tc.name} — 完成 (${deltaDesc})` })
+
+      // Emit codex events for new entries
+      if (engineResult.codex && engineResult.codex.length > player.codex.length) {
+        const newEntries = engineResult.codex.slice(player.codex.length)
+        for (const entry of newEntries) {
+          emit('codex', {
+            name: (entry as Record<string, unknown>).name ?? '未知',
+            entry_type: (entry as Record<string, unknown>).entry_type ?? 'general',
+            description: (entry as Record<string, unknown>).description ?? '',
+            timestamp: clock.now(),
+          })
+        }
+      }
 
       agentLogger.log({
         timestamp: clock.iso(),
@@ -661,6 +700,7 @@ export async function agentLoop(
   }
 
   // ── Step 11: Atomic commit ───────────────────────────────────────────
+  emit('step', { label: 'Executed [保存] 提交游戏状态...' })
   agentLogger.log({
     timestamp: clock.iso(),
     event: 'turn.commit',
@@ -735,6 +775,7 @@ export async function agentLoop(
   }
 
   // ── Step 12: Emit final events ───────────────────────────────────────
+  emit('step', { label: 'Done 回合完成' })
   emit('state_update', {
     player: updatedPlayer,
     deltas: state.deltas,

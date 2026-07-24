@@ -35,6 +35,7 @@ export function SelectScreen() {
   const { setPhase, setPlayer, addMessage, removeMessage, setLoading, setCurrentEvent, player, addNotification } = useGameStore()
   const [selected, setSelected] = useState<string | null>(null)
   const [loading, setLocalLoading] = useState(false)
+  const [stepLogs, setStepLogs] = useState<string[]>([])
 
   const addErrorMessage = (content: string, userInput: string) => {
     const msgs = useGameStore.getState().chatHistory
@@ -63,6 +64,7 @@ export function SelectScreen() {
     setPhase("PLAYING");
     setLocalLoading(true)
     setLoading(true)
+    setStepLogs([])
     const userInput = '\n[STREAM_START]\n[GENRE]' + trope.id + '\n[TITLE]' + trope.name + '\n[HINT]' + trope.openingHint + '\n[STREAM_END]\n'
     addMessage({ id: 'sys-' + Date.now(), role: 'system', content: '选择了开局流派: ' + trope.name, timestamp: Date.now() })
     try {
@@ -124,7 +126,10 @@ export function SelectScreen() {
             if (payload.player) setPlayer(payload.player as any)
           } else if (evt === 'step') {
             const label = payload.label as string | undefined
-            if (label) setCurrentEvent(label)
+            if (label) {
+              setCurrentEvent(label)
+              setStepLogs(prev => [...prev, label])
+            }
           } else if (evt === 'codex') {
             const ce = payload
             useGameStore.getState().addCodex({id:Date.now().toString(),name:ce.name as string,entry_type:(ce.entry_type as string)||"general",description:(ce.description as string)||"",metadata:(ce.metadata as Record<string,unknown>)||{},timestamp:(ce.timestamp as number)||Date.now()})
@@ -171,6 +176,36 @@ export function SelectScreen() {
             {loading ? <><Loader2 className="h-4 w-4 md:h-5 md:w-5 mr-1.5 md:mr-2 animate-spin" />天道推演中...</> : '确认选择'}
           </button>
         </div>
+        {stepLogs.length > 0 && (
+          <div className="max-w-md mx-auto space-y-0.5 max-h-48 overflow-y-auto bg-zinc-900/50 rounded-lg p-3 border border-zinc-800">
+            {stepLogs.map((log, i) => (
+              <div
+                key={i}
+                className={
+                  "text-xs " +
+                  (log.includes("[Node]")
+                    ? "text-amber-400 font-medium"
+                    : log.includes("Executed")
+                    ? "text-emerald-400"
+                    : log.includes("[思考]")
+                    ? "text-violet-400"
+                    : log.includes("[RAG]")
+                    ? "text-cyan-400"
+                    : log.includes("[验证]")
+                    ? "text-yellow-400"
+                    : log.includes("failed") || log.includes("Failed")
+                    ? "text-red-400"
+                    : log.includes("Done")
+                    ? "text-emerald-300 font-medium"
+                    : "text-zinc-400")
+                }
+              >
+                <span className="text-zinc-600 mr-1 select-none">▸</span>
+                {log}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

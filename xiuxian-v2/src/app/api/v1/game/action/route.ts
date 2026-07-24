@@ -198,25 +198,75 @@ export async function POST(req: Request): Promise<Response> {
       let turnRepo: import('@/server/infrastructure/ports').TurnExecutionRepository
       let outboxRepo: import('@/server/infrastructure/ports').OutboxRepository
 
+      // Try Prisma first; fall back to fakes on any failure
+      let useFake = !dbUrl
       if (dbUrl) {
-        const { PrismaClient } = await import('@prisma/client')
-        const { PrismaPg } = await import('@prisma/adapter-pg')
-        const repos = await import('@/server/infrastructure/prisma-repositories')
+        try {
+          const { PrismaClient } = await import('@prisma/client')
+          const { PrismaPg } = await import('@prisma/adapter-pg')
+          const repos = await import('@/server/infrastructure/prisma-repositories')
 
-        const prisma = new PrismaClient({ adapter: new PrismaPg(dbUrl) })
-        playerRepo = repos.createPrismaPlayerRepository(prisma)
-        turnRepo = repos.createPrismaTurnExecutionRepository(prisma)
-        outboxRepo = repos.createPrismaOutboxRepository(prisma)
-      } else {
+          const prisma = new PrismaClient({ adapter: new PrismaPg(dbUrl) })
+          playerRepo = repos.createPrismaPlayerRepository(prisma)
+          turnRepo = repos.createPrismaTurnExecutionRepository(prisma)
+          outboxRepo = repos.createPrismaOutboxRepository(prisma)
+
+          // Verify connectivity and seed default player if missing
+          const existingPlayer = await playerRepo.findById(playerId)
+          if (!existingPlayer) {
+            await prisma.player.create({
+              data: {
+                id: playerId,
+                status: 'ALIVE',
+                name: playerName,
+                gender: '男',
+                version: 0,
+                stats: {
+                  hp: { current: 100, max: 100, status_desc: '健康' },
+                  mp: { current: 50, max: 50, status_desc: '充足' },
+                  spirit: { value: 5, desc: '凡识' },
+                  realm: '练气期一层',
+                  age: { current: 18, max: 120 },
+                  race: '人族',
+                  alignment: '正道',
+                  sect: '散修',
+                  spiritual_root: '金灵根',
+                  mental_state: '正常',
+                  reputation: 0,
+                  emotion: '平静',
+                  state_of_mind: 80,
+                  fortune: 50,
+                  karma: 0,
+                  techniques: { main: '基础吐纳', combat: [], movement: '步行', support: [] },
+                  shield: { current: 0, max: 50 },
+                  talents: [],
+                  traits: [],
+                },
+                inventory: [],
+                codex: [],
+                relationships: {},
+                situations: [],
+                foreshadowings: [],
+                createdAt: new Date(),
+                updatedAt: new Date(),
+              },
+            })
+          }
+        } catch (err) {
+          console.warn('[api/v1/game/action] PostgreSQL 不可用，降级使用内存fake仓库:', (err as Error).message)
+          useFake = true
+        }
+      }
+
+      if (useFake) {
         const fakes = await import('@/server/infrastructure/fake-repositories')
         playerRepo = fakes.createFakePlayerRepository()
         turnRepo = fakes.createFakeTurnExecutionRepository()
         outboxRepo = fakes.createFakeOutboxRepository()
 
-        // Seed a default player for development convenience (fake mode only)
         let player = await playerRepo.findById(playerId)
         if (!player) {
-          const defaultPlayer = {
+          playerRepo = fakes.createFakePlayerRepository([{
             id: playerId,
             status: 'ALIVE' as const,
             name: playerName,
@@ -250,28 +300,36 @@ export async function POST(req: Request): Promise<Response> {
             foreshadowings: [],
             createdAt: Date.now(),
             updatedAt: Date.now(),
-          }
-          playerRepo = fakes.createFakePlayerRepository([defaultPlayer])
+          }])
         }
       }
 
-      await executeGameTurn(
-        {
-          playerRepo,
-          turnRepo,
-          outboxRepo,
-          llmProvider: createLLMAdapter({
-            retryPolicy,
+      try {
+        await executeGameTurn(
+          {
+            playerRepo,
+            turnRepo,
+            outboxRepo,
+            llmProvider: createLLMAdapter({
+              retryPolicy,
+              clock,
+            }),
+            ragProvider: createFakeRAGProvider({ results: [] }),
+            summaryProvider: createFakeSummaryProvider(),
             clock,
-          }),
-          ragProvider: createFakeRAGProvider({ results: [] }),
-          summaryProvider: createFakeSummaryProvider(),
-          clock,
-          idGen,
-          eventSink,
-        },
-        turnRequest,
-      )
+            idGen,
+            eventSink,
+          },
+          turnRequest,
+        )
+      } catch (err) {
+        console.error('[api/v1/game/action] stream 启动异常:', err)
+        eventSink.fail({
+          code: 'INTERNAL_ERROR',
+          message: err instanceof Error ? err.message : '流启动失败',
+          retryable: false,
+        })
+      }
     },
   })
 

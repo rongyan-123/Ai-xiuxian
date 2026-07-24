@@ -347,7 +347,7 @@ export function ChatPanel() {
                   </span>
                   <Loader2 className="h-3 w-3 text-zinc-500 animate-spin ml-auto" />
                 </div>
-                {/* 诗歌轮播 */}
+                {/* 等待首个事件 */}
                 {stepLogs.length === 0 && (
                   <motion.div
                     key={poemIndex}
@@ -360,7 +360,7 @@ export function ChatPanel() {
                     {LOADING_POEMS[poemIndex]}
                   </motion.div>
                 )}
-                <div className="space-y-0.5 max-h-64 overflow-y-auto">
+                <div className="space-y-0.5 max-h-80 overflow-y-auto pr-1">
                   {stepLogs.map((log, i) => (
                     <motion.div
                       key={i}
@@ -370,13 +370,19 @@ export function ChatPanel() {
                       className={
                         "text-xs " +
                         (log.includes("[Node]")
-                          ? "text-amber-400 mt-1"
+                          ? "text-amber-400 mt-1 font-medium"
                           : log.includes("Executed")
                           ? "text-emerald-400"
+                          : log.includes("[思考]")
+                          ? "text-violet-400"
+                          : log.includes("[RAG]")
+                          ? "text-cyan-400"
+                          : log.includes("[验证]")
+                          ? "text-yellow-400"
                           : log.includes("failed") || log.includes("Failed")
                           ? "text-red-400"
                           : log.includes("Done")
-                          ? "text-emerald-300"
+                          ? "text-emerald-300 font-medium mt-1"
                           : "text-zinc-400")
                       }
                     >
