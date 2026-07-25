@@ -448,10 +448,39 @@ describe('Agent Loop — tool execution via rule engine', () => {
 })
 
 describe('Agent Loop — validation errors', () => {
-  it('fails with TOOL_VALIDATION_ERROR for unknown tool', async () => {
+  it('self-corrects on first validation failure, succeeds on retry', async () => {
+    // 1st call: bad tool → validation error injected → loop retries
+    // 2nd call: good tool → succeeds
+    // 3rd call: narration → done
     const llm = createFakeLLMProvider([
       makeSuccessLLM('尝试施法', [
         { id: 'call_1', name: 'NONEXISTENT_TOOL', arguments: { x: 1 } },
+      ]),
+      makeSuccessLLM(null, [
+        { id: 'call_2', name: 'Modify_Stats', arguments: { hp_change: -5 } },
+      ]),
+      makeSuccessLLM('你调整了气息，继续前行。'),
+    ])
+    const sink = createFakeEventSink()
+    const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })
+
+    await agentLoop(deps, makeRequest())
+
+    expect(sink.failed).toBe(false)
+    expect(sink.completed).toBe(true)
+  })
+
+  it('fails with TOOL_VALIDATION_ERROR after 3 consecutive validation failures', async () => {
+    // 3 consecutive bad tool calls → circuit breaker
+    const llm = createFakeLLMProvider([
+      makeSuccessLLM(null, [
+        { id: 'call_1', name: 'NONEXISTENT_TOOL', arguments: { x: 1 } },
+      ]),
+      makeSuccessLLM(null, [
+        { id: 'call_2', name: 'NONEXISTENT_TOOL', arguments: { x: 2 } },
+      ]),
+      makeSuccessLLM(null, [
+        { id: 'call_3', name: 'NONEXISTENT_TOOL', arguments: { x: 3 } },
       ]),
     ])
     const sink = createFakeEventSink()
@@ -479,26 +508,34 @@ describe('Agent Loop — validation errors', () => {
     expect(sink.failed).toBe(false)
   })
 
-  it('fails for contradictory tool calls (add+reduce same item)', async () => {
+  it('executes contradictory tool calls sequentially through rule engine', async () => {
+    // Per-tool execution handles add+reduce naturally — net 灵石+2
     const llm = createFakeLLMProvider([
       makeSuccessLLM(null, [
         { id: 'call_1', name: 'Backpack_additems', arguments: { items: [{ name: '灵石', count: 5 }] } },
         { id: 'call_2', name: 'Backpack_reduceitems', arguments: { items: [{ name: '灵石', count: 3 }] } },
       ]),
+      makeSuccessLLM('你整理了一下灵石。'),
     ])
     const sink = createFakeEventSink()
     const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })
 
     await agentLoop(deps, makeRequest())
 
-    expect(sink.failed).toBe(true)
-    expect(sink.errorCode).toBe('TOOL_VALIDATION_ERROR')
+    expect(sink.failed).toBe(false)
+    expect(sink.completed).toBe(true)
   })
 
-  it('fails for malformed tool args', async () => {
+  it('fails after 3 consecutive malformed tool arg errors', async () => {
     const llm = createFakeLLMProvider([
       makeSuccessLLM(null, [
         { id: 'call_1', name: 'Update_Relationship', arguments: { change: 10 } }, // missing required npc_name
+      ]),
+      makeSuccessLLM(null, [
+        { id: 'call_2', name: 'Update_Relationship', arguments: { change: 20 } }, // still missing
+      ]),
+      makeSuccessLLM(null, [
+        { id: 'call_3', name: 'Update_Relationship', arguments: { change: 30 } }, // still missing → circuit breaker
       ]),
     ])
     const sink = createFakeEventSink()

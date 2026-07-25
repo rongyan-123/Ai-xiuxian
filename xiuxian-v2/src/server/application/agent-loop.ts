@@ -27,9 +27,10 @@ import type {
   TurnExecutionRepository,
   OutboxRepository,
 } from '../infrastructure/ports'
+import type { T1Npc } from '@/types'
 import { processRuleEngine } from '../domain/rule-engine'
 import type { RuleEngineDeps } from '../domain/rule-engine'
-import { validateToolCalls } from '../domain/tool-schemas'
+import { validateToolCalls, validateSingleToolCall } from '../domain/tool-schemas'
 import { commitGameTurn, rollbackGameTurn } from '../infrastructure/transaction'
 import {
   getToolsForCaller,
@@ -44,6 +45,7 @@ import { compressMessages, estimateTokens } from './context-compression'
 import { getRegionState } from '../domain/region-state'
 import { TOOL_GATE_CHECKS } from '../domain/gate-checks'
 import type { GateCheckContext } from '../domain/gate-checks'
+import { getActiveNpcsAtLocation, formatNpcPresence } from '../domain/npc-activity'
 
 // ── Logger ───────────────────────────────────────────────────────────────
 
@@ -117,6 +119,8 @@ interface AgentState {
   cancelled: boolean
   /** Compressed narrative summary from previous turns */
   narrativeSummary: string
+  /** Consecutive tool validation failures (for self-correction circuit breaker) */
+  consecutiveValidationFailures: number
 }
 
 interface ComplexityBudget {
@@ -177,21 +181,16 @@ function isPrepareInput(input: string): boolean {
 // ── Planning Prompts ──────────────────────────────────────────────────────
 
 function buildDefaultPlanningPrompt(player: PlayerSnapshot, input: string): string {
-  return `你是一个修仙世界的游戏主控AI（Game Master）。
+  return `你是这个修仙世界的运转者。此刻，一位名为"${player.name}"的修士（${player.stats.realm}），正位于${player.currentLocation ?? '新手村'}，他/她的行动是：「${input}」
 
-【当前状态】
-- 玩家: ${player.name}，${player.stats.realm}，位于${player.currentLocation ?? '新手村'}
-- 玩家输入: "${input}"
-
-【任务】
-在调用任何工具之前，先制定一个简短的行动计划。列出你需要执行的步骤（通常1-3步即可）。
+在调用工具之前，先思考这个世界如何回应。列出行动步骤（通常1-3步）。
 
 【输出格式】
-只输出编号列表，每行一个步骤。不要调用工具，不要写叙述文字。示例：
-1. 探查当前位置的环境信息
-2. 根据探查结果生成场景描述
+只输出编号列表，每行一个步骤。不调用工具，不写叙述。示例：
+1. 探查当前位置的环境与在场人物
+2. 根据探查结果叙述世界的回应
 
-现在请为玩家输入制定计划：`
+现在制定计划：`
 }
 
 function buildPreparePlanningPrompt(
@@ -204,30 +203,30 @@ function buildPreparePlanningPrompt(
 
   const worldOverview = buildWorldOverview()
 
-  return `你是一个修仙世界的游戏主控AI（Game Master）。游戏刚开始，玩家"${player.name}"（${player.stats.realm}）即将踏入修仙世界。${tropeBlock}
+  return `你是这个修仙世界的运转者。世界在"${player.name}"踏入之前早已存在——宗门在运作，坊市在交易，NPC在过各自的生活。此刻，一位${player.stats.realm}境界的新修士即将步入这个已在运转的世界。${tropeBlock}
 
-【已有的世界设施】
+【已知的世界设施】
 ${worldOverview}
 
-【你的任务】
-作为GM，你需要为这个新游戏做好世界搭建工作。请制定一个完整的开局准备计划。
+【任务】
+为这位新踏入者搭建初始场景。世界已有根基，你的工作是让这个角落对玩家鲜活起来。
 
-**重要：优先选择已有设施**
-- 为玩家选择宗门时，从上面列出的已知宗门中选最匹配的，不要创建新的
-- 描述场景时，优先使用已知地点。只有玩家流派需要特殊场景时才创建新地点
-- NPC和剧情事件可以自由生成
+**优先使用已有设施**
+- 宗门从已知列表中选最匹配的（如"剑修"→金剑门），不新建
+- 初始位置优先选已知地点（"新手村"或"青云坊市"）
+- NPC和剧情事件可自由生成
 
-计划步骤建议：
-1. 根据流派从已知宗门中选择玩家所属宗门（如"剑修"→金剑门）
-2. 确定玩家初始位置（从已知地点中选，默认"新手村"或"青云坊市"）
-3. 生成2-3个与开局相关的NPC角色
-4. 创建开局剧情事件
-5. 用文学化的修仙风格为玩家写出开场叙事
+建议步骤：
+1. 根据流派从已知宗门中选择玩家所属宗门
+2. 确定初始位置（从已知地点中选）
+3. 生成2-3个与开局相关的NPC
+4. 创建开局事件
+5. 以文学化的修仙笔法写出开场叙事
 
 【输出格式】
-只输出编号列表，每行一个步骤。不要调用工具，不要写叙述文字。每个步骤应对应一个具体的工具调用。
+只输出编号列表，每行一个步骤。每个步骤对应一个具体工具调用。不写叙述文字。
 
-现在请制定开局准备计划：`
+制定开局计划：`
 }
 
 // ── Complexity Estimation ─────────────────────────────────────────────────
@@ -268,15 +267,17 @@ function capabilityGate(
   // 2. 构建检查上下文
   const regionState = getRegionState()
   const statsRecord = state.stats as Record<string, unknown>
-  const npcsHere = (state.npcs as Array<Record<string, unknown>>).filter(
-    (n) => n.currentLocation === state.currentLocation,
+  const npcsActive = getActiveNpcsAtLocation(
+    (state.npcs ?? []) as unknown as T1Npc[],
+    state.currentLocation,
+    state.worldTime ?? Date.now(),
   )
   const ctx: GateCheckContext = {
     args,
     currentLocation: state.currentLocation,
     playerRealm: (statsRecord.realm as string) ?? '凡人',
     playerHp: (statsRecord.hp as { current: number; max: number }) ?? { current: 100, max: 100 },
-    npcsAtLocation: npcsHere.map((n) => ({ id: n.id as string, name: n.name as string })),
+    npcsAtLocation: npcsActive.map((s) => ({ id: s.npc.id, name: s.npc.name })),
     locationConstraint: regionState.getLocationConstraint(state.currentLocation),
   }
 
@@ -377,14 +378,14 @@ function buildSystemPrompt(
     planBlock = `\n\n【当前行动计划】\n${planLines}\n\n请按计划步骤推进。每步可调用工具实现，完成后用自然语言叙述结果。`
   }
 
-  return `你是一个修仙世界的游戏主控AI（Game Master）。你需要根据玩家的输入推进剧情、描述场景、处理互动。
+  return `你是这个修仙世界的运转者。世界不为任何人停留——NPC有各自的日程与欲望，势力在暗中角逐，机缘自行生灭，风云变幻从不因一人而停滞。玩家踏入此世，你让这个世界真实地回应他的每一步，也让他看见世界从不因他而停转。
 
-【叙事规则】
-- 描述具体发现物（物品/生物/NPC/事件）前，必须先调用对应的探查工具（SearchArea / ExamineObject / LookAround）
-- 描述移动过程、环境气氛、角色感受 → 不需要工具
-- 工具返回什么就描述什么，不添加工具未返回的内容
-- **重要**：上文提到过的NPC、地点、事件必须保持一致性。如果前情提要或在场人物中已经描述了某个人物，后续叙述必须延续这些信息，不能当作不存在
-- 使用文学化的修仙风格叙述，让玩家沉浸在这个世界中
+【叙事之道】
+- 我会先探查再描述：描述具体的发现物（物品、生物、NPC、事件）之前，先调用对应的探查工具获取真实信息。描述移动过程、环境气氛、角色感受则不需要工具
+- 我会让世界自行运转：NPC按自己的目标和性格行动，而非只在对玩家做出反应时才出现；环境随时间和事件自然变化；当叙述中需要时，生成新的NPC或事件来丰富世界
+- 我只叙述工具返回的真实内容，不凭空添加工具应提供的信息
+- 我保持世界的一致性：上文提到的人物、地点、事件在后续叙事中必须延续。前情提要和在场人物是叙事的锚点，不是装饰
+- 我以文学化的修仙笔法叙述，让这个世界在文字中活过来
 
 【玩家当前状态】
 ${stateBlock}
@@ -410,6 +411,15 @@ function buildToolDefinitions(): Array<{
 }
 
 // ── Main Entry Point ──────────────────────────────────────────────────────
+//
+// Lifecycle: GUARD → THINK → ACT(loop) → SAVE
+//
+// GUARD  防重 + 加载玩家 + 广播 accepted
+// THINK  RAG检索(可降级) + 复杂度估算 + 计划制定(简单输入跳过)
+// ACT    [循环] 组装上下文 → LLM推理 → 文本流输出 → 工具执行(校验→闸门→规则引擎)
+//        循环终止条件: LLM不调工具(done) 或 达到轮次上限(hardLimit) 或 取消(cancelled)
+//        自修正: 工具校验失败不报废回合,注入错误让LLM重试,连续3次失败则终止
+// SAVE   构建快照 + 原子提交 + 广播 state_update/completed + 关闭流
 
 export async function agentLoop(
   deps: AgentLoopDeps,
@@ -498,6 +508,7 @@ export async function agentLoop(
     playerId: request.playerId,
     mode: request.mode,
   })
+  emit('step', { label: '[阶段] GUARD — 防重检查通过，玩家状态已加载' })
   agentLogger.log({
     timestamp: clock.iso(),
     event: 'turn.accepted',
@@ -568,6 +579,7 @@ export async function agentLoop(
     completedSteps: [],
     planningPhase: true,
     narrativeSummary: '',
+    consecutiveValidationFailures: 0,
   }
 
   // 简单输入跳过规划，直接执行
@@ -590,6 +602,7 @@ export async function agentLoop(
   }> = []
 
   // ── Step 7: Main Agent Loop ──────────────────────────────────────────
+  emit('step', { label: `[阶段] ACT — 进入行动循环 (复杂度 ${softLimit}/${hardLimit})` })
   while (
     state.iteration < hardLimit &&
     !state.done &&
@@ -650,14 +663,12 @@ export async function agentLoop(
       : undefined
 
     // 构建场景上下文：NPC在场 + 位置图鉴 + 活跃事件 + 前情提要
-    const npcsAtLocation = (state.npcs ?? []).filter(
-      (n) => n.currentLocation === state.currentLocation,
+    const npcsActive2 = getActiveNpcsAtLocation(
+      (state.npcs ?? []) as unknown as T1Npc[],
+      state.currentLocation,
+      state.worldTime ?? Date.now(),
     )
-    const npcsHere = npcsAtLocation.length > 0
-      ? npcsAtLocation.map((n) => {
-          return `- ${n.name}（${n.realm ?? '未知'}，${n.sect ?? '散修'}）：${n.description ?? ''}`
-        }).join('\n')
-      : ''
+    const npcsHere = formatNpcPresence(npcsActive2)
     const locationCodexEntry = state.codex.find(
       (e) =>
         e.name === state.currentLocation &&
@@ -847,7 +858,7 @@ export async function agentLoop(
     const toolNames = response.toolCalls.map(tc => tc.name).join(', ')
     emit('step', { label: `Executed [工具] AI决定调用: ${toolNames}` })
 
-    // Validate all tool calls first
+    // Per-tool validation + gate check + execution (self-correcting)
     agentLogger.log({
       timestamp: clock.iso(),
       event: 'turn.tool_validation',
@@ -859,57 +870,46 @@ export async function agentLoop(
       tool_count: response.toolCalls.length,
     })
 
-    const validation = validateToolCalls(
-      response.toolCalls.map((tc) => ({
-        name: tc.name,
-        args: tc.arguments,
-      })),
-    )
-
-    if (!validation.valid) {
-      // 找到实际失败的工具（validation.toolName 指向问题工具）
-      const failedToolName = validation.toolName ?? response.toolCalls[0]?.name
-      const failedCall = response.toolCalls.find((tc) => tc.name === failedToolName) ?? response.toolCalls[0]
-      const argsPreview = failedCall
-        ? `${failedCall.name}(${JSON.stringify(failedCall.arguments).slice(0, 500)})`
-        : 'unknown'
-      // 提取 Zod 校验细节
-      const zodDetails = validation.details
-        ? (validation.details as { issues?: Array<{ path: (string | number)[]; message: string }> })?.issues
-            ?.map((i) => `${i.path.join('.')}: ${i.message}`)
-            .join('; ') ?? ''
-        : ''
-      const detailSuffix = zodDetails ? ` — 校验细节: ${zodDetails}` : ''
-      emit('step', { label: `[验证] 工具调用校验失败: ${validation.message} — ${argsPreview}${detailSuffix}` })
-      agentLogger.log({
-        timestamp: clock.iso(),
-        event: 'turn.failed',
-        level: 'error',
-        requestId,
-        runId,
-        playerId: request.playerId,
-        error_code: 'TOOL_VALIDATION_ERROR',
-        retryable: false,
-      })
-      // Fail immediately on unrecoverable validation errors.
-      // Future enhancement: for MALFORMED_ARGS on known tools,
-      // inject error observation and let LLM self-correct.
-      await rollbackGameTurn(
-        txDeps,
-        executionId,
-        'TOOL_VALIDATION_ERROR',
-        validation.message,
-      )
-      eventSink.fail({
-        code: 'TOOL_VALIDATION_ERROR',
-        message: validation.message,
-        retryable: false,
-      })
-      return
-    }
+    let blockedCount = 0
 
     for (const tc of response.toolCalls) {
-      // Gate check
+      // ── 7e-i. Per-tool validation ──────────────────────────────────────
+      const singleValidation = validateSingleToolCall(tc.name, tc.arguments)
+      if (!singleValidation.valid) {
+        state.consecutiveValidationFailures++
+        if (state.consecutiveValidationFailures >= 3) {
+          emit('step', { label: `[错误] 连续${state.consecutiveValidationFailures}次工具调用格式错误，终止回合` })
+          agentLogger.log({
+            timestamp: clock.iso(),
+            event: 'turn.failed',
+            level: 'error',
+            requestId, runId, playerId: request.playerId,
+            error_code: 'TOOL_VALIDATION_ERROR',
+            retryable: false,
+          })
+          await rollbackGameTurn(txDeps, executionId, 'TOOL_VALIDATION_ERROR', singleValidation.message)
+          eventSink.fail({ code: 'TOOL_VALIDATION_ERROR', message: singleValidation.message, retryable: false })
+          return
+        }
+        const zodIssues = singleValidation.details
+          ? (singleValidation.details as { issues?: Array<{ path: (string | number)[]; message: string }> })?.issues
+              ?.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') ?? ''
+          : ''
+        emit('step', { label: `[校验] ${tc.name} 参数格式有误: ${singleValidation.message}${zodIssues ? ' — ' + zodIssues : ''} — 注入错误供AI自修正` })
+        state.toolResults.push({
+          toolCallId: tc.id, name: tc.name,
+          result: { error: true, code: singleValidation.code, message: singleValidation.message },
+        })
+        turnToolResults.push({
+          toolCallId: tc.id,
+          content: JSON.stringify({ error: true, code: singleValidation.code, message: singleValidation.message }),
+        })
+        blockedCount++
+        continue
+      }
+      state.consecutiveValidationFailures = 0
+
+      // ── 7e-ii. Gate check ─────────────────────────────────────────────
       emit('step', { label: `[Node] ${tc.name} — 校验权限...` })
       const gateResult = capabilityGate(tc.name, tc.arguments, state)
       if (!gateResult.allowed) {
@@ -922,6 +922,7 @@ export async function agentLoop(
           toolCallId: tc.id,
           content: JSON.stringify({ blocked: true, reason: gateResult.reason }),
         })
+        blockedCount++
         continue
       }
 
@@ -1020,6 +1021,14 @@ export async function agentLoop(
       }
     }
 
+    // 如果本轮所有工具调用都被拦截，给 LLM 明确信号
+    if (blockedCount > 0 && blockedCount === response.toolCalls.length) {
+      state.toolResults.push({
+        name: '_system',
+        result: { blocked_all: true, hint: '以上工具调用均被拦截。请寻找替代方案达成目标，而不是重复被拦截的操作。' },
+      })
+    }
+
     // ── 7f. Record tool call history for next iteration ─────────────────
     // 工具执行后总是再循环一次，让 LLM 叙述工具结果。
     // 软/硬限制防止无限循环。纯文本回复（无工具）在步骤 7d 触发 done。
@@ -1046,6 +1055,9 @@ export async function agentLoop(
       // The budget hint in system prompt handles the warning
     }
   }
+
+  // ── Phase: SAVE ──────────────────────────────────────────────────────
+  emit('step', { label: '[阶段] SAVE — 行动循环结束，准备提交' })
 
   // 构建本回合的叙事摘要（供下回合使用）
   if (state.accumulatedText) {
@@ -1080,9 +1092,10 @@ export async function agentLoop(
 
   // ── Step 9: Hard limit reached without done → force completion ───────
   if (!state.done && state.iteration >= hardLimit) {
-    // Emit whatever text we have and complete
-    if (state.accumulatedText) {
-      // Text already streamed; add a system note
+    emit('step', { label: `[收束] 回合达到复杂度上限（${hardLimit}轮），已自动收束。当前场景将在下一回合继续。` })
+    if (!state.accumulatedText) {
+      state.accumulatedText = '（回合因复杂度超限而提前结束，请继续你的旅程。）'
+      emit('text-delta', { content: state.accumulatedText })
     }
   }
 

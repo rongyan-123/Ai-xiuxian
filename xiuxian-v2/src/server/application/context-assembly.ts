@@ -1,4 +1,8 @@
 /**
+ * @deprecated 此模块从未接入 agent-loop，其中的 GM_STATIC_RULES 已过时。
+ *             GM prompt 已直接在 agent-loop.ts 的 buildSystemPrompt() 中维护。
+ *             保留此文件仅供历史参考，后续版本可整体删除。
+ *
  * Context Assembly — 分层上下文组装（替代简单字符串拼接）
  *
  * 三层架构：

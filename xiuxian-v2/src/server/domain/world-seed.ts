@@ -371,3 +371,99 @@ export const SEED_TECHNIQUES: SeedTechnique[] = [
     suitable_for: '丹修、药师',
   },
 ]
+
+// ── NPC（3个预种子）──────────────────────────────────────────────────────────
+
+export interface SeedNpc {
+  name: string
+  tier: 'T2' | 'T1'
+  title?: string
+  realm: string
+  currentLocation: string
+  alignment: '正道' | '魔道' | '中立'
+  sect: string
+  personality: string
+  description: string
+  relationship: number
+  /** T2特性参数，影响行为决策 */
+  traits: Record<string, number>
+  /** 日程表：一天内的活动安排 */
+  schedule: NpcActivitySlot[]
+}
+
+export interface NpcActivitySlot {
+  startHour: number   // 0-23 游戏内小时
+  endHour: number
+  activity: string     // "站柜"/"逛街"/"打铁"/"休息"/"睡觉"
+  location: string     // 具体位置
+  /** 此时间段是否可交互 */
+  interactable: boolean
+}
+
+export const SEED_NPCS: SeedNpc[] = [
+  {
+    name: '王老四',
+    tier: 'T2',
+    title: '丹药铺店主',
+    realm: '筑基初期',
+    currentLocation: '青云坊市',
+    alignment: '中立',
+    sect: '万宝楼',
+    personality: '贪婪',
+    description: '青云坊市丹药铺的老板，精于算计，眼珠一转就是一个主意。据说年轻时在万宝楼做过伙计，学了一手做生意的本事。对灵石有异乎寻常的执着。',
+    relationship: 0,
+    traits: { greed: 0.8, friendly: 0.4, courage: 0.3, cunning: 0.7 },
+    schedule: [
+      { startHour: 5, endHour: 7, activity: '开门备货', location: '青云坊市-丹药铺', interactable: true },
+      { startHour: 7, endHour: 12, activity: '站柜营业', location: '青云坊市-丹药铺', interactable: true },
+      { startHour: 12, endHour: 13, activity: '午间用饭', location: '青云坊市-茶楼', interactable: true },
+      { startHour: 13, endHour: 17, activity: '站柜营业', location: '青云坊市-丹药铺', interactable: true },
+      { startHour: 17, endHour: 19, activity: '收摊关门', location: '青云坊市-丹药铺', interactable: true },
+      { startHour: 19, endHour: 22, activity: '盘点账目', location: '青云坊市-丹药铺', interactable: false },
+      { startHour: 22, endHour: 5, activity: '休息', location: '青云坊市-丹药铺', interactable: false },
+    ],
+  },
+  {
+    name: '李散修',
+    tier: 'T1',
+    realm: '练气期五层',
+    currentLocation: '青云坊市',
+    alignment: '中立',
+    sect: '散修',
+    personality: '温和',
+    description: '一个常在坊市出没的散修，为人随和，喜欢在茶楼喝茶听消息。修为不高但在坊市人缘不错，消息灵通。',
+    relationship: 0,
+    traits: { friendly: 0.7, courage: 0.5, gossip: 0.8 },
+    schedule: [
+      { startHour: 6, endHour: 8, activity: '晨练吐纳', location: '青云坊市-客栈', interactable: false },
+      { startHour: 8, endHour: 12, activity: '逛街淘宝', location: '青云坊市', interactable: true },
+      { startHour: 12, endHour: 14, activity: '茶楼歇息', location: '青云坊市-茶楼', interactable: true },
+      { startHour: 14, endHour: 17, activity: '逛街淘宝', location: '青云坊市', interactable: true },
+      { startHour: 17, endHour: 19, activity: '出城修炼', location: '苍澜山', interactable: false },
+      { startHour: 19, endHour: 22, activity: '茶楼闲聊', location: '青云坊市-茶楼', interactable: true },
+      { startHour: 22, endHour: 6, activity: '打坐休息', location: '青云坊市-客栈', interactable: false },
+    ],
+  },
+  {
+    name: '张铁匠',
+    tier: 'T1',
+    title: '铁匠铺师傅',
+    realm: '练气期八层',
+    currentLocation: '青云坊市',
+    alignment: '正道',
+    sect: '金剑门',
+    personality: '冷漠',
+    description: '金剑门的外门弟子，因突破无望被派到坊市打理铁匠铺。平日里沉默寡言，打起铁来却一丝不苟。虽然面冷但工艺精湛，坊市中不少散修的法宝都是他打造的。',
+    relationship: 0,
+    traits: { craftsmanship: 0.9, friendly: 0.2, courage: 0.6 },
+    schedule: [
+      { startHour: 6, endHour: 8, activity: '开炉备料', location: '青云坊市-铁匠铺', interactable: true },
+      { startHour: 8, endHour: 12, activity: '打铁锻造', location: '青云坊市-铁匠铺', interactable: true },
+      { startHour: 12, endHour: 13, activity: '午间歇息', location: '青云坊市-铁匠铺', interactable: false },
+      { startHour: 13, endHour: 18, activity: '打铁锻造', location: '青云坊市-铁匠铺', interactable: true },
+      { startHour: 18, endHour: 20, activity: '收工整理', location: '青云坊市-铁匠铺', interactable: true },
+      { startHour: 20, endHour: 22, activity: '练剑自修', location: '青云坊市-铁匠铺', interactable: false },
+      { startHour: 22, endHour: 6, activity: '休息', location: '青云坊市-铁匠铺', interactable: false },
+    ],
+  },
+]

@@ -610,6 +610,33 @@ export function validateToolCalls(
   return { valid: true, calls: parsed }
 }
 
+/** 校验单个工具调用 — 用于 Agent 自修正循环 */
+export function validateSingleToolCall(
+  name: string,
+  args: Record<string, unknown>,
+): ToolValidationResult | ToolValidationError {
+  if (!(name in TOOL_SCHEMAS)) {
+    return {
+      valid: false,
+      code: 'UNKNOWN_TOOL',
+      message: `Unknown tool: "${name}"`,
+      toolName: name,
+    }
+  }
+  const schema = TOOL_SCHEMAS[name]
+  const validatedArgs = schema.safeParse(args)
+  if (!validatedArgs.success) {
+    return {
+      valid: false,
+      code: 'MALFORMED_ARGS',
+      message: `Invalid arguments for tool "${name}"`,
+      toolName: name,
+      details: validatedArgs.error,
+    }
+  }
+  return { valid: true, calls: [{ name: name as ToolName, args: validatedArgs.data as Record<string, unknown> }] }
+}
+
 // ── Contradiction detection ─────────────────────────────────────────────
 
 function detectContradictions(

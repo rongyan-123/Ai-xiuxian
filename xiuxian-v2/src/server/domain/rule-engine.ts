@@ -11,6 +11,7 @@
  */
 import type { ICharacterStats, IInventoryItem, Situation, Foreshadowing, T1Npc } from '@/types'
 import { createT1Npc, getNpcsAtLocation } from './npc-engine'
+import { getActiveNpcsAtLocation, formatNpcPresence } from './npc-activity'
 
 export interface RuleEngineResult {
   stats: ICharacterStats
@@ -306,15 +307,19 @@ function evaluateToolCall(
     const newLoc = (args.location || args.to) as string
     locationRef.value = newLoc
     deltas.location = newLoc
-    // 报告新位置在场的NPC
-    const npcsHere = getNpcsAtLocation(newNpcs, newLoc)
-    if (npcsHere.length > 0) {
-      deltas.npcsPresent = npcsHere.map((n) => ({
-        name: n.name,
-        title: n.title,
-        realm: n.realm,
-        personality: n.personality,
+    // 报告新位置在场的NPC（含活动状态）
+    const npcsActive = getActiveNpcsAtLocation(newNpcs, newLoc, worldTimeRef.value)
+    if (npcsActive.length > 0) {
+      deltas.npcsPresent = npcsActive.map((s) => ({
+        name: s.npc.name,
+        title: s.npc.title,
+        realm: s.npc.realm,
+        personality: s.npc.personality,
+        activity: s.activity,
+        interactable: s.interactable,
+        location: s.location,
       }))
+      deltas.npcsHereText = formatNpcPresence(npcsActive)
     }
   }
 

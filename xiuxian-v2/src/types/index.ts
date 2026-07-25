@@ -16,6 +16,29 @@ export interface T1Npc {
   dialogueTemplates: Record<string, string[]>
   description: string
   createdAt: number
+  /** NPC日程表（可选，T2+ NPC由种子数据设置） */
+  schedule?: NpcScheduleSlot[]
+  /** 知识气泡：此NPC目击的事件列表 */
+  knowledge?: KnowledgeRecord[]
+  /** 特性参数（可选，影响行为） */
+  traits?: Record<string, number>
+}
+
+export interface NpcScheduleSlot {
+  startHour: number
+  endHour: number
+  activity: string
+  location: string
+  interactable: boolean
+}
+
+export interface KnowledgeRecord {
+  eventType: 'player_action' | 'npc_action' | 'world_event'
+  description: string
+  location: string
+  timestamp: number
+  witnesses: string[]
+  publicKnowledge: boolean
 }
 
 export interface IPlayer {

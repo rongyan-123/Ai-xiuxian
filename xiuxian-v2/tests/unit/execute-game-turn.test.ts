@@ -359,10 +359,16 @@ describe('8.1 ExecuteGameTurn', () => {
   })
 
   describe('invalid tool calls', () => {
-    it('fails with TOOL_VALIDATION_ERROR for unknown tool name', async () => {
+    it('fails with TOOL_VALIDATION_ERROR after 3 consecutive unknown tools', async () => {
       const llm = createFakeLLMProvider([
-        makeSuccessLLM('我来施法', [
+        makeSuccessLLM('尝试1', [
           { id: 'call_1', name: 'NONEXISTENT_TOOL', arguments: { x: 1 } },
+        ]),
+        makeSuccessLLM('尝试2', [
+          { id: 'call_2', name: 'NONEXISTENT_TOOL', arguments: { x: 2 } },
+        ]),
+        makeSuccessLLM('尝试3', [
+          { id: 'call_3', name: 'NONEXISTENT_TOOL', arguments: { x: 3 } },
         ]),
       ])
       const deps = makeDeps({ overrides: { llmProvider: llm } })
@@ -374,20 +380,22 @@ describe('8.1 ExecuteGameTurn', () => {
       expect(sink.errorCode).toBe('TOOL_VALIDATION_ERROR')
     })
 
-    it('fails for contradictory tool calls', async () => {
+    it('executes contradictory tool calls sequentially', async () => {
+      // Per-tool execution: add 5 then remove 3 = net +2 灵石
       const llm = createFakeLLMProvider([
         makeSuccessLLM('矛盾操作', [
           { id: 'call_1', name: 'Backpack_additems', arguments: { items: [{ name: '灵石', count: 5 }] } },
           { id: 'call_2', name: 'Backpack_reduceitems', arguments: { items: [{ name: '灵石', count: 3 }] } },
         ]),
+        makeSuccessLLM('灵石整理完毕。'),
       ])
       const deps = makeDeps({ overrides: { llmProvider: llm } })
 
       await executeGameTurn(deps, makeRequest())
 
       const sink = deps.eventSink as ReturnType<typeof createFakeEventSink>
-      expect(sink.failed).toBe(true)
-      expect(sink.errorCode).toBe('TOOL_VALIDATION_ERROR')
+      expect(sink.failed).toBe(false)
+      expect(sink.completed).toBe(true)
     })
 
     it('accepts well-formed tool calls and applies them', async () => {

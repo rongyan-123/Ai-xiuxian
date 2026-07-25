@@ -149,3 +149,40 @@ export function matchDialogue(
 export function npcsToContract(npcs: T1Npc[]): T1NpcContract[] {
   return npcs as unknown as T1NpcContract[]
 }
+
+// ── Seed NPC Factory ─────────────────────────────────────────────────────────
+
+import type { SeedNpc } from './world-seed'
+import { SEED_NPCS } from './world-seed'
+
+export function createNpcFromSeed(seed: SeedNpc): T1Npc {
+  const npc = createT1Npc({
+    name: seed.name,
+    title: seed.title,
+    realm: seed.realm,
+    currentLocation: seed.currentLocation,
+    alignment: seed.alignment,
+    sect: seed.sect,
+    personality: seed.personality,
+    description: seed.description,
+    relationship: seed.relationship,
+  })
+
+  // 附加种子数据特有的字段
+  npc.schedule = seed.schedule.map((s) => ({ ...s }))
+  npc.traits = { ...seed.traits }
+  npc.knowledge = []
+
+  return npc
+}
+
+/** 获取所有预种子NPC实例 */
+export function getAllSeedNpcs(): T1Npc[] {
+  return SEED_NPCS.map(createNpcFromSeed)
+}
+
+/** 获取预种子T2+ NPC */
+export function getT2Npcs(): T1Npc[] {
+  return SEED_NPCS.filter((s) => s.tier === 'T2').map(createNpcFromSeed)
+}
+
