@@ -154,6 +154,7 @@ export function npcsToContract(npcs: T1Npc[]): T1NpcContract[] {
 
 import type { SeedNpc } from './world-seed'
 import { SEED_NPCS } from './world-seed'
+import { rollNpcParams } from './npc-archetype'
 
 export function createNpcFromSeed(seed: SeedNpc): T1Npc {
   const npc = createT1Npc({
@@ -170,8 +171,14 @@ export function createNpcFromSeed(seed: SeedNpc): T1Npc {
 
   // 附加种子数据特有的字段
   npc.schedule = seed.schedule.map((s) => ({ ...s }))
-  npc.traits = { ...seed.traits }
   npc.knowledge = []
+
+  // 接入原型系统：从原型roll参数，seed.traits作为手工覆盖值
+  const archetypeParams = rollNpcParams(seed.archetype, {
+    seed: `seed-${seed.name}`,
+    overrides: seed.traits,
+  })
+  npc.traits = { ...archetypeParams }
 
   return npc
 }

@@ -385,7 +385,9 @@ export interface SeedNpc {
   personality: string
   description: string
   relationship: number
-  /** T2特性参数，影响行为决策 */
+  /** 所属原型ID（merchant/wanderer/craftsman/guard） */
+  archetype: string
+  /** T2特性参数，作为原型参数的手工覆盖值 */
   traits: Record<string, number>
   /** 日程表：一天内的活动安排 */
   schedule: NpcActivitySlot[]
@@ -410,6 +412,7 @@ export const SEED_NPCS: SeedNpc[] = [
     alignment: '中立',
     sect: '万宝楼',
     personality: '贪婪',
+    archetype: 'merchant',
     description: '青云坊市丹药铺的老板，精于算计，眼珠一转就是一个主意。据说年轻时在万宝楼做过伙计，学了一手做生意的本事。对灵石有异乎寻常的执着。',
     relationship: 0,
     traits: { greed: 0.8, friendly: 0.4, courage: 0.3, cunning: 0.7 },
@@ -426,6 +429,7 @@ export const SEED_NPCS: SeedNpc[] = [
   {
     name: '李散修',
     tier: 'T1',
+    archetype: 'wanderer',
     realm: '练气期五层',
     currentLocation: '青云坊市',
     alignment: '中立',
@@ -447,6 +451,7 @@ export const SEED_NPCS: SeedNpc[] = [
   {
     name: '张铁匠',
     tier: 'T1',
+    archetype: 'craftsman',
     title: '铁匠铺师傅',
     realm: '练气期八层',
     currentLocation: '青云坊市',

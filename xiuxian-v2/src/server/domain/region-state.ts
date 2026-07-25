@@ -114,3 +114,13 @@ export function compareRealms(playerRealm: string, requiredRealm: string): numbe
 export function meetsRealmRequirement(playerRealm: string, requiredRealm: string): boolean {
   return compareRealms(playerRealm, requiredRealm) >= 0
 }
+
+// ── 约束规则查询（委托给 region-dm）──────────────────────────────────────────
+
+import { getRegionRules, type ConstraintRule } from './region-dm'
+
+export function getRegionConstraints(locationName: string): ConstraintRule[] {
+  return getRegionRules(locationName)
+}
+
+export type { ConstraintRule }
