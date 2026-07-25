@@ -185,6 +185,35 @@ export function getBindingSummary(
     .join('\n')
 }
 
+/**
+ * 格式化为GM系统提示注入文本。
+ * 包含：区域规则全文 + 各NPC合规情况。
+ * 与formatConstraintContext的区别：formatConstraintContext是NPC视角（只看得到自己遵守的规则），
+ * 这个是GM视角（全貌）。
+ */
+export function formatRegionContextForGm(
+  locationName: string,
+  npcs: T1Npc[],
+): string {
+  const rules = getRegionRules(locationName)
+  if (rules.length === 0) return ''
+
+  const ruleLines = rules.map((r, i) => `  ${i + 1}. ${r.text}`)
+  const summary = getNpcComplianceSummary(npcs, locationName)
+  const npcLines = summary
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => `  - ${l}`)
+
+  return [
+    `【区域规则 — ${locationName}】`,
+    ...ruleLines,
+    '',
+    '【NPC合规状态】',
+    ...npcLines,
+  ].join('\n')
+}
+
 // ── 全区域规则查询（供 Agent 使用）────────────────────────────────────────────
 
 /** 获取玩家当前所在区域的约束规则（适用于GM agent上下文） */

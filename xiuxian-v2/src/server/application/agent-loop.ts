@@ -43,6 +43,7 @@ import { buildWorldOverview } from '../domain/entity-selector'
 import type { GameLogger } from '../observability/game-logger'
 import { compressMessages, estimateTokens } from './context-compression'
 import { getRegionState } from '../domain/region-state'
+import { formatRegionContextForGm } from '../domain/region-dm'
 import { TOOL_GATE_CHECKS } from '../domain/gate-checks'
 import type { GateCheckContext } from '../domain/gate-checks'
 import { getActiveNpcsAtLocation, formatNpcPresence } from '../domain/npc-activity'
@@ -310,7 +311,7 @@ function buildSystemPrompt(
   iteration: number,
   softLimit: number,
   planContext?: { planSteps: string[]; completedSteps: Array<{ stepIndex: number; summary: string }> },
-  sceneContext?: { npcsHere: string; locationDesc: string; situationsSummary: string; narrativeSummary: string },
+  sceneContext?: { npcsHere: string; locationDesc: string; situationsSummary: string; narrativeSummary: string; constraintContext?: string },
 ): string {
   const stateBlock = [
     `角色名称: ${player.name}`,
@@ -356,6 +357,9 @@ function buildSystemPrompt(
     }
     if (sceneContext.narrativeSummary) {
       parts.push(`【前情提要】\n${sceneContext.narrativeSummary}`)
+    }
+    if (sceneContext.constraintContext) {
+      parts.push(sceneContext.constraintContext)
     }
     if (parts.length > 0) {
       sceneBlock = '\n\n' + parts.join('\n\n')
@@ -687,15 +691,28 @@ export async function agentLoop(
       : ''
     const narrativeSummary = state.narrativeSummary
 
+    // 构建区域约束上下文（GM视角：全貌规则 + NPC合规状态）
+    const npcsForConstraint = npcsActive2.map((s) => s.npc)
+    const constraintContext = npcsForConstraint.length > 0
+      ? formatRegionContextForGm(state.currentLocation, npcsForConstraint)
+      : ''
+
+    const sceneCtx = {
+      npcsHere,
+      locationDesc,
+      situationsSummary,
+      narrativeSummary,
+      ...(constraintContext ? { constraintContext } : {}),
+    }
+    const hasSceneCtx = npcsHere || locationDesc || situationsSummary || narrativeSummary || constraintContext
+
     const systemPrompt = buildSystemPrompt(
       player,
       ragContext,
       state.iteration,
       softLimit,
       planCtx,
-      (npcsHere || locationDesc || situationsSummary || narrativeSummary)
-        ? { npcsHere, locationDesc, situationsSummary, narrativeSummary }
-        : undefined,
+      hasSceneCtx ? sceneCtx : undefined,
     )
 
     let messages: Array<{
