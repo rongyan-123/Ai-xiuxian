@@ -43,7 +43,7 @@ function buildNormalCompletion(requestId = 'req-test-001', runId = 'run-test-001
   lines.push(sseLine({ protocolVersion: '1.0', requestId, runId, sequence: 1, occurredAt: now, type: 'step', payload: { label: '正在推演天道...' } }))
   lines.push(sseLine({ protocolVersion: '1.0', requestId, runId, sequence: 2, occurredAt: now, type: 'text-delta', payload: { content: '你踏入青云山，四周云雾缭绕，灵气充沛。' } }))
   lines.push(sseLine({ protocolVersion: '1.0', requestId, runId, sequence: 3, occurredAt: now, type: 'text-delta', payload: { content: '远处传来一声悠远的钟鸣，似乎在召唤着什么。' } }))
-  lines.push(sseLine({ protocolVersion: '1.0', requestId, runId, sequence: 4, occurredAt: now, type: 'state_update', payload: { player: { id: 'player-test', name: '测试修士', status: 'ALIVE', stats: { hp: 100, maxHp: 100, mp: 50, maxMp: 50, spirit: 5, realm: '练气期一层' } }, deltas: [] } }))
+  lines.push(sseLine({ protocolVersion: '1.0', requestId, runId, sequence: 4, occurredAt: now, type: 'state_update', payload: { player: { id: 'player-test', name: '测试修士', gender: '男', status: 'ALIVE', stats: { hp: { current: 100, max: 100, status_desc: '健康' }, mp: { current: 50, max: 50, status_desc: '充足' }, spirit: { value: 5, desc: '凡识' }, realm: '练气期一层', age: { current: 18, max: 120 }, race: '人族', alignment: '正道', sect: '散修', spiritual_root: '金灵根', mental_state: '正常', reputation: 0 }, inventory: [], codex: [], relationships: {}, worldTime: Date.now(), currentLocation: '新手村', npcs: [] }, deltas: {} } }))
   lines.push(sseLine({ protocolVersion: '1.0', requestId, runId, sequence: 5, occurredAt: now, type: 'completed', payload: { reply: '你踏入青云山，四周云雾缭绕，灵气充沛。远处传来一声悠远的钟鸣，似乎在召唤着什么。' } }))
   return { lines, status: 200 }
 }
