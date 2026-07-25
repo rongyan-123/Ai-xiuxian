@@ -33,11 +33,17 @@ import { validateToolCalls } from '../domain/tool-schemas'
 import { commitGameTurn, rollbackGameTurn } from '../infrastructure/transaction'
 import {
   getToolsForCaller,
+  getToolDefinition,
   toLlmToolDefinitions,
   type ToolDefinition,
 } from '../contracts/tool-catalog'
 import { createGameLogger } from '../observability/game-logger'
+import { buildWorldOverview } from '../domain/entity-selector'
 import type { GameLogger } from '../observability/game-logger'
+import { compressMessages, estimateTokens } from './context-compression'
+import { getRegionState } from '../domain/region-state'
+import { TOOL_GATE_CHECKS } from '../domain/gate-checks'
+import type { GateCheckContext } from '../domain/gate-checks'
 
 // ── Logger ───────────────────────────────────────────────────────────────
 
@@ -45,6 +51,13 @@ const agentLogger: GameLogger = createGameLogger({
   service: 'game-agent',
   level: 'info',
 })
+
+// ── Model Context Limits ─────────────────────────────────────────────────
+
+const MODEL_CONTEXT_LIMITS: Record<string, number> = {
+  'deepseek-chat': 65536,
+}
+const DEFAULT_CONTEXT_LIMIT = 65536
 
 // ── Public Types ──────────────────────────────────────────────────────────
 
@@ -64,7 +77,7 @@ export interface GameTurnRequest {
   playerId: string
   playerName: string
   input: string
-  mode: 'action' | 'dialogue' | 'exploration'
+  mode: 'action' | 'dialogue' | 'exploration' | 'prepare'
   idempotencyKey: string
   llmConfig: LLMProviderConfig
   signal?: AbortSignal
@@ -79,7 +92,7 @@ interface AgentState {
   /** Accumulated LLM text across iterations */
   accumulatedText: string
   /** Tool results from current iteration (ephemeral) */
-  toolResults: Array<{ name: string; result: Record<string, unknown> }>
+  toolResults: Array<{ toolCallId?: string; name: string; result: Record<string, unknown> }>
   /** Cumulative game state changes from rule engine */
   stats: Record<string, unknown>
   inventory: Array<Record<string, unknown>>
@@ -88,17 +101,133 @@ interface AgentState {
   situations: Array<Record<string, unknown>>
   foreshadowings: Array<Record<string, unknown>>
   deltas: Record<string, unknown>
+  /** World state */
+  worldTime: number
+  currentLocation: string
+  npcs: Array<Record<string, unknown>>
+  /** Plan-and-Execute */
+  planSteps: string[]
+  completedSteps: Array<{ stepIndex: number; toolName: string; summary: string }>
+  planningPhase: boolean
   /** Iteration counter */
   iteration: number
   /** Whether the Agent has finished (LLM returned no tool_use) */
   done: boolean
   /** Whether the caller cancelled */
   cancelled: boolean
+  /** Compressed narrative summary from previous turns */
+  narrativeSummary: string
 }
 
 interface ComplexityBudget {
   softLimit: number
   hardLimit: number
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+export function formatWorldTime(ms: number): string {
+  const base = new Date(2026, 0, 1).getTime() // 游戏元年
+  const elapsed = ms - base
+  const days = Math.floor(elapsed / 86400000)
+  const hours = Math.floor((elapsed % 86400000) / 3600000)
+  return `修仙历${days + 1}天 ${hours}时`
+}
+
+function parsePlanFromText(text: string): string[] {
+  return text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => /^\d+[\.\)、]/.test(l))
+    .map((l) => l.replace(/^\d+[\.\)、]\s*/, ''))
+}
+
+function isSimpleInput(input: string): boolean {
+  const trimmed = input.trim()
+  if (trimmed.length <= 3) return true
+  // 纯问候/确认类短句
+  if (/^(你好|在吗|嗯|哦|好|可以|行|继续|然后|ok|hi|hey|bye)$/i.test(trimmed)) return true
+  return false
+}
+
+// ── Trope Extraction ──────────────────────────────────────────────────────
+
+interface TropeInfo {
+  genre: string
+  title: string
+  hint: string
+}
+
+function extractTropeInfo(input: string): TropeInfo | null {
+  const genreMatch = input.match(/\[GENRE\](.+?)(?:\n|$)/)
+  const titleMatch = input.match(/\[TITLE\](.+?)(?:\n|$)/)
+  const hintMatch = input.match(/\[HINT\](.+?)(?:\n|$)/)
+  if (!genreMatch && !titleMatch) return null
+  return {
+    genre: genreMatch?.[1]?.trim() ?? '未知',
+    title: titleMatch?.[1]?.trim() ?? '未知',
+    hint: hintMatch?.[1]?.trim() ?? '',
+  }
+}
+
+function isPrepareInput(input: string): boolean {
+  return input.includes('[STREAM_START]') && input.includes('[STREAM_END]')
+}
+
+// ── Planning Prompts ──────────────────────────────────────────────────────
+
+function buildDefaultPlanningPrompt(player: PlayerSnapshot, input: string): string {
+  return `你是一个修仙世界的游戏主控AI（Game Master）。
+
+【当前状态】
+- 玩家: ${player.name}，${player.stats.realm}，位于${player.currentLocation ?? '新手村'}
+- 玩家输入: "${input}"
+
+【任务】
+在调用任何工具之前，先制定一个简短的行动计划。列出你需要执行的步骤（通常1-3步即可）。
+
+【输出格式】
+只输出编号列表，每行一个步骤。不要调用工具，不要写叙述文字。示例：
+1. 探查当前位置的环境信息
+2. 根据探查结果生成场景描述
+
+现在请为玩家输入制定计划：`
+}
+
+function buildPreparePlanningPrompt(
+  player: PlayerSnapshot,
+  tropeInfo: TropeInfo | null,
+): string {
+  const tropeBlock = tropeInfo
+    ? `\n【开局流派】\n- 流派: ${tropeInfo.title}\n- 标签: ${tropeInfo.genre}\n- 核心要素: ${tropeInfo.hint}`
+    : ''
+
+  const worldOverview = buildWorldOverview()
+
+  return `你是一个修仙世界的游戏主控AI（Game Master）。游戏刚开始，玩家"${player.name}"（${player.stats.realm}）即将踏入修仙世界。${tropeBlock}
+
+【已有的世界设施】
+${worldOverview}
+
+【你的任务】
+作为GM，你需要为这个新游戏做好世界搭建工作。请制定一个完整的开局准备计划。
+
+**重要：优先选择已有设施**
+- 为玩家选择宗门时，从上面列出的已知宗门中选最匹配的，不要创建新的
+- 描述场景时，优先使用已知地点。只有玩家流派需要特殊场景时才创建新地点
+- NPC和剧情事件可以自由生成
+
+计划步骤建议：
+1. 根据流派从已知宗门中选择玩家所属宗门（如"剑修"→金剑门）
+2. 确定玩家初始位置（从已知地点中选，默认"新手村"或"青云坊市"）
+3. 生成2-3个与开局相关的NPC角色
+4. 创建开局剧情事件
+5. 用文学化的修仙风格为玩家写出开场叙事
+
+【输出格式】
+只输出编号列表，每行一个步骤。不要调用工具，不要写叙述文字。每个步骤应对应一个具体的工具调用。
+
+现在请制定开局准备计划：`
 }
 
 // ── Complexity Estimation ─────────────────────────────────────────────────
@@ -124,10 +253,51 @@ interface GateResult {
   reason?: string
 }
 
-// HACK: 闸门系统当前为stub，所有工具无条件放行。Phase 2需接入world state单例后实现gateRules检查。2026-07-24
-function capabilityGate(toolName: string, _args: Record<string, unknown>): GateResult {
-  void _args
-  void toolName
+function capabilityGate(
+  toolName: string,
+  args: Record<string, unknown>,
+  state: AgentState,
+): GateResult {
+  // 1. 查找工具定义
+  const toolDef = getToolDefinition(toolName)
+  if (!toolDef) return { allowed: true } // 未知工具放行
+
+  const gateLevel = toolDef.gate ?? 'none'
+  if (gateLevel === 'none') return { allowed: true }
+
+  // 2. 构建检查上下文
+  const regionState = getRegionState()
+  const statsRecord = state.stats as Record<string, unknown>
+  const npcsHere = (state.npcs as Array<Record<string, unknown>>).filter(
+    (n) => n.currentLocation === state.currentLocation,
+  )
+  const ctx: GateCheckContext = {
+    args,
+    currentLocation: state.currentLocation,
+    playerRealm: (statsRecord.realm as string) ?? '凡人',
+    playerHp: (statsRecord.hp as { current: number; max: number }) ?? { current: 100, max: 100 },
+    npcsAtLocation: npcsHere.map((n) => ({ id: n.id as string, name: n.name as string })),
+    locationConstraint: regionState.getLocationConstraint(state.currentLocation),
+  }
+
+  // 3. 禁区先行拦截（适用所有工具的通用检查）
+  const targetLoc = args.to as string | undefined
+  if (targetLoc && regionState.isForbidden(targetLoc)) {
+    return { allowed: false, reason: `"${targetLoc}" 是禁区，无法进入` }
+  }
+
+  // 4. 工具特定检查
+  const checks = TOOL_GATE_CHECKS[toolName]
+  if (checks) {
+    for (const check of checks) {
+      const result = check(ctx)
+      if (!result.allowed) {
+        if (gateLevel === 'enforce') return result
+        // validate 模式：不拦截但 Agent 后续可能收到警告
+      }
+    }
+  }
+
   return { allowed: true }
 }
 
@@ -138,10 +308,14 @@ function buildSystemPrompt(
   ragContext: string,
   iteration: number,
   softLimit: number,
+  planContext?: { planSteps: string[]; completedSteps: Array<{ stepIndex: number; summary: string }> },
+  sceneContext?: { npcsHere: string; locationDesc: string; situationsSummary: string; narrativeSummary: string },
 ): string {
   const stateBlock = [
     `角色名称: ${player.name}`,
     `性别: ${player.gender}`,
+    `当前位置: ${player.currentLocation ?? '新手村'}`,
+    `游戏时间: ${formatWorldTime(player.worldTime ?? Date.now())}`,
     `境界: ${player.stats.realm}`,
     `生命: ${player.stats.hp.current}/${player.stats.hp.max}`,
     `灵力: ${player.stats.mp.current}/${player.stats.mp.max}`,
@@ -166,10 +340,42 @@ function buildSystemPrompt(
   const traitNames = (player.stats.traits as string[])?.join('、') || '无'
   const ragBlock = ragContext ? `\n\n【相关背景知识】\n${ragContext}` : ''
 
+  // 场景上下文：NPC在场 + 位置图鉴 + 活跃事件 + 前情提要
+  let sceneBlock = ''
+  if (sceneContext) {
+    const parts: string[] = []
+    if (sceneContext.locationDesc) {
+      parts.push(`【场景描述】\n${sceneContext.locationDesc}`)
+    }
+    if (sceneContext.npcsHere) {
+      parts.push(`【在场人物】\n${sceneContext.npcsHere}`)
+    }
+    if (sceneContext.situationsSummary) {
+      parts.push(`【活跃事件】\n${sceneContext.situationsSummary}`)
+    }
+    if (sceneContext.narrativeSummary) {
+      parts.push(`【前情提要】\n${sceneContext.narrativeSummary}`)
+    }
+    if (parts.length > 0) {
+      sceneBlock = '\n\n' + parts.join('\n\n')
+    }
+  }
+
   const budgetHint =
     iteration >= softLimit
       ? `\n\n[系统提示] 当前是第${iteration}轮思考。请在1-2轮内收束当前场景，给玩家一个明确的阶段性结论或选择。`
       : ''
+
+  let planBlock = ''
+  if (planContext && planContext.planSteps.length > 0) {
+    const planLines = planContext.planSteps.map((step, i) => {
+      const done = planContext.completedSteps.find((cs) => cs.stepIndex === i)
+      const marker = done ? '✓' : '○'
+      const detail = done ? ` — ${done.summary}` : ''
+      return `${marker} ${i + 1}. ${step}${detail}`
+    }).join('\n')
+    planBlock = `\n\n【当前行动计划】\n${planLines}\n\n请按计划步骤推进。每步可调用工具实现，完成后用自然语言叙述结果。`
+  }
 
   return `你是一个修仙世界的游戏主控AI（Game Master）。你需要根据玩家的输入推进剧情、描述场景、处理互动。
 
@@ -177,13 +383,14 @@ function buildSystemPrompt(
 - 描述具体发现物（物品/生物/NPC/事件）前，必须先调用对应的探查工具（SearchArea / ExamineObject / LookAround）
 - 描述移动过程、环境气氛、角色感受 → 不需要工具
 - 工具返回什么就描述什么，不添加工具未返回的内容
+- **重要**：上文提到过的NPC、地点、事件必须保持一致性。如果前情提要或在场人物中已经描述了某个人物，后续叙述必须延续这些信息，不能当作不存在
 - 使用文学化的修仙风格叙述，让玩家沉浸在这个世界中
 
 【玩家当前状态】
 ${stateBlock}
 技能: ${techniqueNames}
 特质: ${traitNames}
-背包: ${inventoryNames}${ragBlock}${budgetHint}`
+背包: ${inventoryNames}${ragBlock}${sceneBlock}${planBlock}${budgetHint}`
 }
 
 // ── Tool Definition Builder ───────────────────────────────────────────────
@@ -194,11 +401,12 @@ function buildToolDefinitions(): Array<{
   parameters: Record<string, unknown>
 }> {
   const gmTools = getToolsForCaller('game_master')
-  return toLlmToolDefinitions(gmTools).map((t) => ({
+  const defs = toLlmToolDefinitions(gmTools).map((t) => ({
     name: t.name,
     description: t.description,
     parameters: t.input_schema,
   }))
+  return defs
 }
 
 // ── Main Entry Point ──────────────────────────────────────────────────────
@@ -349,10 +557,22 @@ export async function agentLoop(
     relationships: { ...player.relationships },
     situations: [...player.situations] as unknown as Array<Record<string, unknown>>,
     foreshadowings: [...player.foreshadowings] as unknown as Array<Record<string, unknown>>,
+    worldTime: player.worldTime ?? Date.now(),
+    currentLocation: player.currentLocation ?? '新手村',
+    npcs: [...(player.npcs ?? [])] as unknown as Array<Record<string, unknown>>,
     deltas: {},
     iteration: 0,
     done: false,
     cancelled: false,
+    planSteps: [],
+    completedSteps: [],
+    planningPhase: true,
+    narrativeSummary: '',
+  }
+
+  // 简单输入跳过规划，直接执行
+  if (isSimpleInput(request.input)) {
+    state.planningPhase = false
   }
 
   const ruleDeps: RuleEngineDeps = {
@@ -360,10 +580,13 @@ export async function agentLoop(
     random: () => idGen.uuid(),
   }
 
-  // Ephemeral message pruning: remove old tool results, keep last N
-  const toolResultHistory: Array<{
+  // 对话历史：每次迭代记录 assistant 的工具调用和对应的工具结果，
+  // 在下一轮组装成 OpenAI/DeepSeek 兼容格式（tool_calls + tool_call_id）。
+  const turnHistory: Array<{
     iteration: number
-    results: Array<{ name: string; result: Record<string, unknown> }>
+    assistantText: string | null
+    toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>
+    toolResults: Array<{ toolCallId: string; content: string }>
   }> = []
 
   // ── Step 7: Main Agent Loop ──────────────────────────────────────────
@@ -378,44 +601,164 @@ export async function agentLoop(
       break
     }
 
-    // ── 7a. Assemble messages ──────────────────────────────────────────
+    // ── 7a. Planning phase ─────────────────────────────────────────────
+    if (state.planningPhase) {
+      emit('step', { label: '[规划] AI正在制定行动计划...' })
+
+      const isPrepare = request.mode === 'prepare' || isPrepareInput(request.input)
+      const tropeInfo = isPrepare ? extractTropeInfo(request.input) : null
+
+      const planningPrompt = isPrepare
+        ? buildPreparePlanningPrompt(player, tropeInfo)
+        : buildDefaultPlanningPrompt(player, request.input)
+
+      const planningMessages = [
+        { role: 'system' as const, content: planningPrompt },
+        { role: 'user' as const, content: request.input },
+      ]
+
+      const planResult = await llmProvider.complete(request.llmConfig, {
+        messages: planningMessages,
+        tools: [], // 规划阶段不调用工具
+        signal: request.signal,
+        timeoutMs: 30000,
+      })
+
+      if (planResult.ok && planResult.response.content) {
+        const steps = parsePlanFromText(planResult.response.content)
+        if (steps.length > 0) {
+          state.planSteps = steps
+          emit('step', {
+            label: `[规划] 计划制定完成 — ${steps.length}个步骤:\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`,
+          })
+        } else {
+          // 解析失败，fallback 到直接执行
+          emit('step', { label: '[规划] 未能解析计划，直接执行' })
+        }
+      } else {
+        emit('step', { label: '[规划] 规划调用失败，直接执行' })
+      }
+
+      state.planningPhase = false
+      state.iteration++
+      continue
+    }
+
+    // ── 7b. Assemble messages (execution phase) ─────────────────────────
+    const planCtx = state.planSteps.length > 0
+      ? { planSteps: state.planSteps, completedSteps: state.completedSteps }
+      : undefined
+
+    // 构建场景上下文：NPC在场 + 位置图鉴 + 活跃事件 + 前情提要
+    const npcsAtLocation = (state.npcs ?? []).filter(
+      (n) => n.currentLocation === state.currentLocation,
+    )
+    const npcsHere = npcsAtLocation.length > 0
+      ? npcsAtLocation.map((n) => {
+          return `- ${n.name}（${n.realm ?? '未知'}，${n.sect ?? '散修'}）：${n.description ?? ''}`
+        }).join('\n')
+      : ''
+    const locationCodexEntry = state.codex.find(
+      (e) =>
+        e.name === state.currentLocation &&
+        e.entry_type === 'location',
+    )
+    const locationDesc = locationCodexEntry
+      ? (locationCodexEntry as Record<string, unknown>).description as string
+      : ''
+    const activeSituations = (state.situations ?? []).filter(
+      (s) => s.status !== 'ended',
+    )
+    const situationsSummary = activeSituations.length > 0
+      ? activeSituations.map((s) => {
+          return `- [${s.type ?? '?'}] ${s.title}：${s.trigger ?? ''}`
+        }).join('\n')
+      : ''
+    const narrativeSummary = state.narrativeSummary
+
     const systemPrompt = buildSystemPrompt(
       player,
       ragContext,
       state.iteration,
       softLimit,
+      planCtx,
+      (npcsHere || locationDesc || situationsSummary || narrativeSummary)
+        ? { npcsHere, locationDesc, situationsSummary, narrativeSummary }
+        : undefined,
     )
 
-    const messages: Array<{ role: string; content: string }> = [
+    let messages: Array<{
+      role: string
+      content: string | null
+      tool_calls?: Array<{
+        id: string
+        type: 'function'
+        function: { name: string; arguments: string }
+      }>
+      tool_call_id?: string
+    }> = [
       { role: 'system', content: systemPrompt },
     ]
 
-    // Add ephemeral tool results from previous iterations
-    for (const entry of toolResultHistory) {
-      for (const tr of entry.results) {
+    // 始终先放用户输入
+    // prepare 模式：将结构化流派数据替换为自然语言意图，避免 LLM 困惑
+    const isPrepare = request.mode === 'prepare' || isPrepareInput(request.input)
+    const userInput = isPrepare
+      ? `开始游戏。请按照制定好的计划逐步生成世界（场景、NPC、宗门、剧情事件），最后用文学化的修仙风格为玩家写出开场叙事。`
+      : request.input
+    messages.push({ role: 'user', content: userInput })
+
+    // 添加历史轮次的 assistant(tool_calls) + tool 消息对
+    for (const entry of turnHistory) {
+      // Assistant 消息（含 tool_calls）
+      if (entry.toolCalls.length > 0) {
+        messages.push({
+          role: 'assistant',
+          content: entry.assistantText,
+          tool_calls: entry.toolCalls.map((tc) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: {
+              name: tc.name,
+              arguments: JSON.stringify(tc.arguments),
+            },
+          })),
+        })
+      } else if (entry.assistantText) {
+        messages.push({ role: 'assistant', content: entry.assistantText })
+      }
+
+      // Tool 结果消息（含 tool_call_id）
+      for (const tr of entry.toolResults) {
         messages.push({
           role: 'tool',
-          content: `[${tr.name} 结果]\n${JSON.stringify(tr.result)}`,
+          tool_call_id: tr.toolCallId,
+          content: tr.content,
         })
       }
     }
 
-    // Add conversation history placeholder (accumulated text from prior iterations)
-    if (state.accumulatedText && state.iteration > 0) {
+    // 非首轮时追加提示
+    if (state.iteration > 0) {
       messages.push({
-        role: 'assistant',
-        content: state.accumulatedText,
+        role: 'user',
+        content: `继续。根据工具返回的结果，继续推进场景。`,
       })
     }
 
-    // Add user input
-    messages.push({
-      role: 'user',
-      content:
-        state.iteration === 0
-          ? request.input
-          : `继续。根据工具返回的结果，继续推进场景。`,
-    })
+    // ── 7a-prime: Context compression check ────────────────────────────
+    if (state.iteration > 1) {
+      const contextLimit = MODEL_CONTEXT_LIMITS[request.llmConfig.modelName] ?? DEFAULT_CONTEXT_LIMIT
+      const result = compressMessages({
+        messages,
+        systemPromptTokens: estimateTokens(systemPrompt),
+        modelContextLimit: contextLimit,
+      })
+      if (result) {
+        messages = result.compressedMessages
+        state.narrativeSummary = result.narrativeSummary
+      }
+    }
 
     // ── 7b. Call LLM with streaming ────────────────────────────────────
     emit('step', {
@@ -499,7 +842,7 @@ export async function agentLoop(
     }
 
     // ── 7e. Gate check + validate + execute tools ──────────────────────
-    state.toolResults = []
+    const turnToolResults: Array<{ toolCallId: string; content: string }> = []
 
     const toolNames = response.toolCalls.map(tc => tc.name).join(', ')
     emit('step', { label: `Executed [工具] AI决定调用: ${toolNames}` })
@@ -524,7 +867,20 @@ export async function agentLoop(
     )
 
     if (!validation.valid) {
-      emit('step', { label: `[验证] 工具调用校验失败: ${validation.message}` })
+      // 找到实际失败的工具（validation.toolName 指向问题工具）
+      const failedToolName = validation.toolName ?? response.toolCalls[0]?.name
+      const failedCall = response.toolCalls.find((tc) => tc.name === failedToolName) ?? response.toolCalls[0]
+      const argsPreview = failedCall
+        ? `${failedCall.name}(${JSON.stringify(failedCall.arguments).slice(0, 500)})`
+        : 'unknown'
+      // 提取 Zod 校验细节
+      const zodDetails = validation.details
+        ? (validation.details as { issues?: Array<{ path: (string | number)[]; message: string }> })?.issues
+            ?.map((i) => `${i.path.join('.')}: ${i.message}`)
+            .join('; ') ?? ''
+        : ''
+      const detailSuffix = zodDetails ? ` — 校验细节: ${zodDetails}` : ''
+      emit('step', { label: `[验证] 工具调用校验失败: ${validation.message} — ${argsPreview}${detailSuffix}` })
       agentLogger.log({
         timestamp: clock.iso(),
         event: 'turn.failed',
@@ -555,18 +911,23 @@ export async function agentLoop(
     for (const tc of response.toolCalls) {
       // Gate check
       emit('step', { label: `[Node] ${tc.name} — 校验权限...` })
-      const gateResult = capabilityGate(tc.name, tc.arguments)
+      const gateResult = capabilityGate(tc.name, tc.arguments, state)
       if (!gateResult.allowed) {
         emit('step', { label: `[Node] ${tc.name} — 被闸门拦截: ${gateResult.reason ?? '无权限'}` })
         state.toolResults.push({
           name: tc.name,
           result: { blocked: true, reason: gateResult.reason },
         })
+        turnToolResults.push({
+          toolCallId: tc.id,
+          content: JSON.stringify({ blocked: true, reason: gateResult.reason }),
+        })
         continue
       }
 
       // Apply tool through rule engine
       emit('step', { label: `Executed [工具] ${tc.name} — 执行中...` })
+      const codexLenBefore = state.codex.length
       const toolCalls = [{ name: tc.name, args: tc.arguments }]
       const engineResult = processRuleEngine(
         toolCalls,
@@ -584,6 +945,9 @@ export async function agentLoop(
         state.situations as unknown as import('@/types').Situation[],
         state.foreshadowings as unknown as import('@/types').Foreshadowing[],
         ruleDeps,
+        state.worldTime as number,
+        state.currentLocation as string,
+        (state.npcs ?? []) as unknown as import('@/types').T1Npc[],
       )
 
       // Merge rule engine results into state
@@ -593,11 +957,20 @@ export async function agentLoop(
       state.relationships = engineResult.relationships
       state.situations = engineResult.situations as unknown as Array<Record<string, unknown>>
       state.foreshadowings = engineResult.foreshadowings as unknown as Array<Record<string, unknown>>
+      state.worldTime = engineResult.worldTime
+      state.currentLocation = engineResult.currentLocation
+      state.npcs = engineResult.npcs as unknown as Array<Record<string, unknown>>
       Object.assign(state.deltas, engineResult.deltas)
 
       state.toolResults.push({
+        toolCallId: tc.id,
         name: tc.name,
         result: engineResult.deltas,
+      })
+
+      turnToolResults.push({
+        toolCallId: tc.id,
+        content: JSON.stringify(engineResult.deltas),
       })
 
       // Emit step with result summary
@@ -608,13 +981,14 @@ export async function agentLoop(
       emit('step', { label: `Executed [工具] ${tc.name} — 完成 (${deltaDesc})` })
 
       // Emit codex events for new entries
-      if (engineResult.codex && engineResult.codex.length > player.codex.length) {
-        const newEntries = engineResult.codex.slice(player.codex.length)
+      if (engineResult.codex && engineResult.codex.length > codexLenBefore) {
+        const newEntries = engineResult.codex.slice(codexLenBefore)
         for (const entry of newEntries) {
+          const e = entry as unknown as Record<string, unknown>
           emit('codex', {
-            name: (entry as Record<string, unknown>).name ?? '未知',
-            entry_type: (entry as Record<string, unknown>).entry_type ?? 'general',
-            description: (entry as Record<string, unknown>).description ?? '',
+            name: e.name ?? '未知',
+            entry_type: e.entry_type ?? 'general',
+            description: e.description ?? '',
             timestamp: clock.now(),
           })
         }
@@ -630,25 +1004,39 @@ export async function agentLoop(
         iteration: state.iteration,
         tool_name: tc.name,
       })
+
+      // 追踪计划步骤完成
+      if (state.planSteps.length > 0) {
+        const nextPending = state.planSteps.findIndex(
+          (_, i) => !state.completedSteps.find((cs) => cs.stepIndex === i),
+        )
+        if (nextPending >= 0) {
+          state.completedSteps.push({
+            stepIndex: nextPending,
+            toolName: tc.name,
+            summary: deltaDesc.length > 60 ? deltaDesc.slice(0, 60) + '...' : deltaDesc,
+          })
+        }
+      }
     }
 
-    // ── 7f. Record tool results for next iteration ─────────────────────
-    toolResultHistory.push({
+    // ── 7f. Record tool call history for next iteration ─────────────────
+    // 工具执行后总是再循环一次，让 LLM 叙述工具结果。
+    // 软/硬限制防止无限循环。纯文本回复（无工具）在步骤 7d 触发 done。
+    turnHistory.push({
       iteration: state.iteration,
-      results: [...state.toolResults],
+      assistantText: response.content,
+      toolCalls: response.toolCalls.map((tc) => ({
+        id: tc.id,
+        name: tc.name,
+        arguments: tc.arguments,
+      })),
+      toolResults: turnToolResults,
     })
 
-    // If the LLM returned text alongside tools, the narrative has been
-    // streamed to the player. Mark done so we don't loop unnecessarily.
-    // Pure-tool responses (no text) will loop for narration.
-    if (hasText) {
-      state.done = true
-      break
-    }
-
-    // ── 7g. Prune ephemeral results (keep only last 2 iterations) ──────
-    while (toolResultHistory.length > 2) {
-      toolResultHistory.shift()
+    // ── 7g. Prune old history (keep only last 2 iterations) ────────────
+    while (turnHistory.length > 2) {
+      turnHistory.shift()
     }
 
     state.iteration++
@@ -657,6 +1045,21 @@ export async function agentLoop(
     if (state.iteration >= softLimit && state.iteration < hardLimit) {
       // The budget hint in system prompt handles the warning
     }
+  }
+
+  // 构建本回合的叙事摘要（供下回合使用）
+  if (state.accumulatedText) {
+    const briefText = state.accumulatedText.length > 200
+      ? state.accumulatedText.slice(0, 200) + '...'
+      : state.accumulatedText
+    const npcNames = (state.npcs ?? [])
+      .slice(-5)
+      .map((n) => (n as Record<string, unknown>).name)
+      .join('、')
+    const parts = [`玩家"${request.playerName}"在${state.currentLocation}。`]
+    if (npcNames) parts.push(`在场NPC：${npcNames}。`)
+    parts.push(`上轮摘要：${briefText}`)
+    state.narrativeSummary = parts.join('\n')
   }
 
   // ── Step 8: Handle cancellation ──────────────────────────────────────
@@ -692,6 +1095,9 @@ export async function agentLoop(
     relationships: state.relationships,
     situations: state.situations as unknown as PlayerSnapshot['situations'],
     foreshadowings: state.foreshadowings as unknown as PlayerSnapshot['foreshadowings'],
+    worldTime: state.worldTime as number,
+    currentLocation: state.currentLocation as string,
+    npcs: (state.npcs ?? []) as unknown as PlayerSnapshot['npcs'],
     status:
       ((state.stats as unknown as Record<string, unknown>).hp as { current: number } | undefined)
         ?.current !== undefined && ((state.stats as unknown as Record<string, unknown>).hp as { current: number }).current <= 0

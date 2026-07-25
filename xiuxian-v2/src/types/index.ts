@@ -3,6 +3,21 @@ export type GradeLevel = '上' | '中' | '下'
 export type ItemGrade = `${GradeTier}阶${GradeLevel}品` | '无'
 export type IntentType = 'NONE' | 'REWARD' | 'PENALTY' | 'COMBAT'
 
+export interface T1Npc {
+  id: string
+  name: string
+  title?: string
+  realm: string
+  currentLocation: string
+  alignment: '正道' | '魔道' | '中立'
+  sect: string
+  personality: string
+  relationship: number
+  dialogueTemplates: Record<string, string[]>
+  description: string
+  createdAt: number
+}
+
 export interface IPlayer {
   id: string
   status: 'ALIVE' | 'DEAD'
@@ -12,6 +27,9 @@ export interface IPlayer {
   inventory: IInventoryItem[]
   codex: CodexEntry[]
   relationships: IRelationships
+  worldTime: number
+  currentLocation: string
+  npcs: T1Npc[]
 }
 
 export interface ICharacterStats {

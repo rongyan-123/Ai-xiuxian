@@ -9,7 +9,8 @@
  * `random` functions. The default wrappers use the real Date.now/Math.random
  * for backward compatibility with existing route handlers.
  */
-import type { ICharacterStats, IInventoryItem, Situation, Foreshadowing } from '@/types'
+import type { ICharacterStats, IInventoryItem, Situation, Foreshadowing, T1Npc } from '@/types'
+import { createT1Npc, getNpcsAtLocation } from './npc-engine'
 
 export interface RuleEngineResult {
   stats: ICharacterStats
@@ -19,6 +20,9 @@ export interface RuleEngineResult {
   situations: Situation[]
   foreshadowings: Foreshadowing[]
   deltas: Record<string, unknown>
+  worldTime: number
+  currentLocation: string
+  npcs: T1Npc[]
 }
 
 interface CodexEntry {
@@ -49,6 +53,9 @@ export function processRuleEngine(
   situations: Situation[],
   foreshadowings: Foreshadowing[],
   deps: Partial<RuleEngineDeps> = {},
+  worldTime: number = Date.now(),
+  currentLocation: string = '新手村',
+  npcs: T1Npc[] = [],
 ): RuleEngineResult {
   const { now, random } = { ...defaultDeps, ...deps }
 
@@ -57,6 +64,9 @@ export function processRuleEngine(
   const newCodex = [...(codex || [])]
   const newSituations = [...situations]
   const newForeshadowings = [...foreshadowings]
+  const newNpcs = [...npcs]
+  let newWorldTime = worldTime
+  let newCurrentLocation = currentLocation
   const deltas: Record<string, unknown> = {}
   const turnEstimate = Math.max(1, situations.reduce((max, s) => Math.max(max, s.startTurn), 0) + 1)
 
@@ -70,6 +80,8 @@ export function processRuleEngine(
   for (const tc of toolCalls) {
     const args = tc.args || {} as Record<string, unknown>
 
+    const wtRef = { value: newWorldTime }
+    const locRef = { value: newCurrentLocation }
     evaluateToolCall(
       tc.name,
       args,
@@ -83,7 +95,12 @@ export function processRuleEngine(
       turnEstimate,
       now,
       random,
+      wtRef,
+      locRef,
+      newNpcs,
     )
+    newWorldTime = wtRef.value
+    newCurrentLocation = locRef.value
   }
 
   return {
@@ -94,6 +111,9 @@ export function processRuleEngine(
     situations: newSituations,
     foreshadowings: newForeshadowings,
     deltas,
+    worldTime: newWorldTime,
+    currentLocation: newCurrentLocation,
+    npcs: newNpcs as T1Npc[],
   }
 }
 
@@ -133,6 +153,15 @@ function normalizeToolName(name: string): string {
   return ALIASES[name] ?? name
 }
 
+/** 去重添加：同名+同类型不重复 */
+function addCodexEntry(
+  codex: CodexEntry[],
+  entry: CodexEntry,
+): void {
+  const exists = codex.some((e) => e.name === entry.name && e.entry_type === entry.entry_type)
+  if (!exists) codex.push(entry)
+}
+
 function evaluateToolCall(
   name: string,
   args: Record<string, unknown>,
@@ -146,6 +175,9 @@ function evaluateToolCall(
   turnEstimate: number,
   now: () => number,
   random: () => string,
+  worldTimeRef: { value: number },
+  locationRef: { value: string },
+  newNpcs: T1Npc[],
 ): void {
   const canonical = normalizeToolName(name)
 
@@ -271,7 +303,30 @@ function evaluateToolCall(
   // ── ChangeLocation (was Change_Location) ────────────────────────────
 
   if (canonical === 'ChangeLocation') {
-    deltas.location = args.location || args.to
+    const newLoc = (args.location || args.to) as string
+    locationRef.value = newLoc
+    deltas.location = newLoc
+    // 报告新位置在场的NPC
+    const npcsHere = getNpcsAtLocation(newNpcs, newLoc)
+    if (npcsHere.length > 0) {
+      deltas.npcsPresent = npcsHere.map((n) => ({
+        name: n.name,
+        title: n.title,
+        realm: n.realm,
+        personality: n.personality,
+      }))
+    }
+  }
+
+  // ── AdvanceTime ──────────────────────────────────────────────────────
+
+  if (canonical === 'AdvanceTime') {
+    const duration = args.duration as string
+    const ms = parseDuration(duration)
+    worldTimeRef.value += ms
+    deltas.timeAdvanced = duration
+    deltas.timeAdvancedMs = ms
+    deltas.newWorldTime = worldTimeRef.value
   }
 
   // ── CheckBreakthrough (was Check_Breakthrough) ──────────────────────
@@ -287,12 +342,13 @@ function evaluateToolCall(
 
   if (canonical === 'GenerateNpc' && (args.npcs || args.npc)) {
     const npcs = (args.npcs || [args.npc]) as Array<Record<string, unknown>>
+    const createdNpcNames: string[] = []
     for (const npc of npcs) {
       const parts = [npc.description as string]
       if (npc.realm) parts.push(`[${npc.realm}]`)
       if (npc.sect) parts.push(npc.sect as string)
       if (npc.personality) parts.push(npc.personality as string)
-      newCodex.push({
+      addCodexEntry(newCodex, {
         id: generateCodexId('cv', now, random),
         name: npc.name as string,
         entry_type: 'npc',
@@ -300,7 +356,23 @@ function evaluateToolCall(
         metadata: {},
         timestamp: now(),
       })
+
+      // 创建 T1 NPC 实体
+      const npcEntity = createT1Npc({
+        name: npc.name as string,
+        title: npc.title as string | undefined,
+        realm: (npc.realm as string) ?? '凡人',
+        currentLocation: locationRef.value,
+        alignment: npc.alignment as '正道' | '魔道' | '中立' | undefined,
+        sect: (npc.sect as string) ?? '散修',
+        personality: (npc.personality as string) ?? '温和',
+        description: npc.description as string,
+        relationship: npc.relationship as number | undefined,
+      })
+      newNpcs.push(npcEntity)
+      createdNpcNames.push(npc.name as string)
     }
+    deltas.newNpcs = createdNpcNames
   }
 
   // ── GenerateLocation (was Generate_Location) ────────────────────────
@@ -316,7 +388,7 @@ function evaluateToolCall(
         parts.push(`关联:${(loc.bound_locations as string[]).join('、')}`)
       if (loc.inhabitants && (loc.inhabitants as unknown[]).length > 0)
         parts.push(`居民:${(loc.inhabitants as string[]).join('、')}`)
-      newCodex.push({
+      addCodexEntry(newCodex, {
         id: generateCodexId('cv', now, random),
         name: loc.name as string,
         entry_type: 'location',
@@ -346,7 +418,7 @@ function evaluateToolCall(
       if (sect.alignment) parts.push(`[${sect.alignment}]`)
       if (sect.master) parts.push(sect.master as string)
       if (sect.specialties) parts.push(sect.specialties as string)
-      newCodex.push({
+      addCodexEntry(newCodex, {
         id: generateCodexId('cv', now, random),
         name: sect.name as string,
         entry_type: 'sect',
@@ -365,7 +437,7 @@ function evaluateToolCall(
       const parts = [item.description as string]
       if (item.grade) parts.push(`[${item.grade}]`)
       if (item.effects) parts.push(item.effects as string)
-      newCodex.push({
+      addCodexEntry(newCodex, {
         id: generateCodexId('cv', now, random),
         name: item.name as string,
         entry_type: 'item',
@@ -379,7 +451,7 @@ function evaluateToolCall(
   // ── AddCodexEntry (was Write_Codex) ─────────────────────────────────
 
   if (canonical === 'AddCodexEntry') {
-    newCodex.push({
+    addCodexEntry(newCodex, {
       id: generateCodexId('cv', now, random),
       name: args.name as string,
       entry_type: (args.entry_type || args.entryType) as string,
@@ -438,12 +510,24 @@ function evaluateToolCall(
 
   // ── Perception query tools & other read-only tools ──────────────────
   // SearchArea, ExamineObject, SenseDanger, CheckNpcState, QueryRegion,
-  // RecallMemory, LookAround, TriggerCombat, AdvanceTime, Skip
+  // RecallMemory, LookAround, TriggerCombat, Skip
   // GenerateDailyPlan, DecideReaction, FormMemory, GenerateDialogue, SelfReflection
   // → Read-only or handled elsewhere; no rule-engine state change needed.
 }
 
 // ─── Helpers (internal) ────────────────────────────────────────────────────
+
+/** Parse human-readable duration to milliseconds. Supports m/分钟/min, h/小时/hour, d/天/day. */
+function parseDuration(d: string): number {
+  const match = d.match(/^(\d+)\s*(m|分钟|min|h|小时|hour|d|天|day)$/i)
+  if (!match) return 0
+  const num = parseInt(match[1], 10)
+  const unit = match[2].toLowerCase()
+  if (unit === 'm' || unit === '分钟' || unit === 'min') return num * 60 * 1000
+  if (unit === 'h' || unit === '小时' || unit === 'hour') return num * 60 * 60 * 1000
+  if (unit === 'd' || unit === '天' || unit === 'day') return num * 24 * 60 * 60 * 1000
+  return 0
+}
 
 function applyModifyStats(
   a: Record<string, unknown>,

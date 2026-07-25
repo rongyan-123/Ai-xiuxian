@@ -137,8 +137,10 @@ type MockLLMResponse = {
 }
 
 let mockFetchResponses: MockLLMResponse[] = []
+let mockLastContent = ''
 
 function mockFetchSuccess(content: string): void {
+  mockLastContent = content
   mockFetchResponses = [{
     status: 200,
     body: {
@@ -175,8 +177,13 @@ describe('HTTP Contract A: SSE Event Envelope', () => {
     globalThis.fetch = vi.fn(async () => {
       if (mockFetchResponses.length === 0) {
         return new Response(JSON.stringify({
-          error: { message: 'No mock responses configured', type: 'test_error' },
-        }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+          id: 'chatcmpl-fallback',
+          object: 'chat.completion',
+          created: Date.now(),
+          model: 'mock-model',
+          choices: [{ index: 0, message: { role: 'assistant', content: mockLastContent }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       const mock = mockFetchResponses.shift()!
       return new Response(JSON.stringify(mock.body), {
@@ -189,6 +196,7 @@ describe('HTTP Contract A: SSE Event Envelope', () => {
   afterEach(() => {
     globalThis.fetch = originalFetch
     mockFetchResponses = []
+    mockLastContent = ''
   })
 
   it('A1: EVERY SSE event must validate against SSEEventSchema discriminated union', async () => {
@@ -305,8 +313,13 @@ describe('HTTP Contract B: SSE Event Ordering', () => {
     globalThis.fetch = vi.fn(async () => {
       if (mockFetchResponses.length === 0) {
         return new Response(JSON.stringify({
-          error: { message: 'No mock responses configured' },
-        }), { status: 500 })
+          id: 'chatcmpl-fallback',
+          object: 'chat.completion',
+          created: Date.now(),
+          model: 'mock-model',
+          choices: [{ index: 0, message: { role: 'assistant', content: mockLastContent }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       const mock = mockFetchResponses.shift()!
       return new Response(JSON.stringify(mock.body), {
@@ -319,6 +332,7 @@ describe('HTTP Contract B: SSE Event Ordering', () => {
   afterEach(() => {
     globalThis.fetch = originalFetch
     mockFetchResponses = []
+    mockLastContent = ''
   })
 
   it('B1: first event must be "accepted"', async () => {
@@ -443,8 +457,13 @@ describe('HTTP Contract C: Response Headers', () => {
     globalThis.fetch = vi.fn(async () => {
       if (mockFetchResponses.length === 0) {
         return new Response(JSON.stringify({
-          error: { message: 'No mock responses configured' },
-        }), { status: 500 })
+          id: 'chatcmpl-fallback',
+          object: 'chat.completion',
+          created: Date.now(),
+          model: 'mock-model',
+          choices: [{ index: 0, message: { role: 'assistant', content: mockLastContent }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       const mock = mockFetchResponses.shift()!
       return new Response(JSON.stringify(mock.body), {
@@ -457,6 +476,7 @@ describe('HTTP Contract C: Response Headers', () => {
   afterEach(() => {
     globalThis.fetch = originalFetch
     mockFetchResponses = []
+    mockLastContent = ''
   })
 
   it('C1: 200 response must have Content-Type: text/event-stream', async () => {
@@ -532,8 +552,13 @@ describe('HTTP Contract D: Error Responses', () => {
     globalThis.fetch = vi.fn(async () => {
       if (mockFetchResponses.length === 0) {
         return new Response(JSON.stringify({
-          error: { message: 'No mock responses configured' },
-        }), { status: 500 })
+          id: 'chatcmpl-fallback',
+          object: 'chat.completion',
+          created: Date.now(),
+          model: 'mock-model',
+          choices: [{ index: 0, message: { role: 'assistant', content: mockLastContent }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       const mock = mockFetchResponses.shift()!
       return new Response(JSON.stringify(mock.body), {
@@ -546,6 +571,7 @@ describe('HTTP Contract D: Error Responses', () => {
   afterEach(() => {
     globalThis.fetch = originalFetch
     mockFetchResponses = []
+    mockLastContent = ''
   })
 
   it('D1: non-JSON body returns 400 with ProblemDetails', async () => {
@@ -647,8 +673,13 @@ describe('HTTP Contract E: Client Integration', () => {
     globalThis.fetch = vi.fn(async () => {
       if (mockFetchResponses.length === 0) {
         return new Response(JSON.stringify({
-          error: { message: 'No mock responses configured' },
-        }), { status: 500 })
+          id: 'chatcmpl-fallback',
+          object: 'chat.completion',
+          created: Date.now(),
+          model: 'mock-model',
+          choices: [{ index: 0, message: { role: 'assistant', content: mockLastContent }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       const mock = mockFetchResponses.shift()!
       return new Response(JSON.stringify(mock.body), {
@@ -661,6 +692,7 @@ describe('HTTP Contract E: Client Integration', () => {
   afterEach(() => {
     globalThis.fetch = originalFetch
     mockFetchResponses = []
+    mockLastContent = ''
   })
 
   it('E1: sse-parser can parse actual server SSE output without errors', async () => {
@@ -947,8 +979,13 @@ describe('HTTP Contract F: Protocol Edge Cases', () => {
     globalThis.fetch = vi.fn(async () => {
       if (mockFetchResponses.length === 0) {
         return new Response(JSON.stringify({
-          error: { message: 'No mock responses configured' },
-        }), { status: 500 })
+          id: 'chatcmpl-fallback',
+          object: 'chat.completion',
+          created: Date.now(),
+          model: 'mock-model',
+          choices: [{ index: 0, message: { role: 'assistant', content: mockLastContent }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       const mock = mockFetchResponses.shift()!
       return new Response(JSON.stringify(mock.body), {
@@ -961,6 +998,7 @@ describe('HTTP Contract F: Protocol Edge Cases', () => {
   afterEach(() => {
     globalThis.fetch = originalFetch
     mockFetchResponses = []
+    mockLastContent = ''
   })
 
   it('F1: unicode/emoji in input does not break SSE', async () => {

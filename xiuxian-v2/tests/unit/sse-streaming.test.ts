@@ -288,6 +288,9 @@ describe('4.1 Event factory', () => {
         inventory: [],
         codex: [],
         relationships: {},
+        worldTime: Date.now(),
+        currentLocation: '新手村',
+        npcs: [],
       },
       deltas: {},
     })

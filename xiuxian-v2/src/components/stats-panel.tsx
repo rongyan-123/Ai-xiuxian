@@ -66,13 +66,45 @@ export function StatsDetailPanel() {
           </div>
         </div>
 
-        {/* Combat */}
+        {/* Combat & Spirit */}
         <div className="space-y-2">
-          <h4 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">战斗</h4>
+          <h4 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">神识与命数</h4>
           <div className="grid grid-cols-2 gap-2">
-            
-            <div className="flex items-center gap-2 p-2 rounded-lg bg-zinc-900 border border-zinc-800"><Wind className="h-4 w-4 text-purple-400" /><div><div className="text-[10px] text-zinc-500">神识</div><div className="text-sm font-bold text-zinc-200">{spirit.value}</div></div></div>
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-zinc-900 border border-zinc-800">
+              <Wind className="h-4 w-4 text-purple-400" />
+              <div>
+                <div className="text-[10px] text-zinc-500">神识</div>
+                <div className="text-sm font-bold text-zinc-200">{spirit.value}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-zinc-900 border border-zinc-800">
+              <Star className="h-4 w-4 text-amber-400" />
+              <div>
+                <div className="text-[10px] text-zinc-500">运势</div>
+                <div className="text-sm font-bold text-zinc-200">{s.fortune ?? '-'}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-zinc-900 border border-zinc-800">
+              <Brain className="h-4 w-4 text-emerald-400" />
+              <div>
+                <div className="text-[10px] text-zinc-500">因果</div>
+                <div className="text-sm font-bold text-zinc-200">{s.karma ?? '-'}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-zinc-900 border border-zinc-800">
+              <Shield className="h-4 w-4 text-blue-400" />
+              <div>
+                <div className="text-[10px] text-zinc-500">声望</div>
+                <div className="text-sm font-bold text-zinc-200">{s.reputation ?? '-'}</div>
+              </div>
+            </div>
           </div>
+          {spirit.desc && (
+            <div className="p-2 rounded-lg bg-zinc-900/50 border border-zinc-800/50">
+              <div className="text-[10px] text-zinc-500 mb-0.5">神识感知</div>
+              <div className="text-xs text-zinc-400 italic">{spirit.desc}</div>
+            </div>
+          )}
         </div>
 
         {/* Techniques */}

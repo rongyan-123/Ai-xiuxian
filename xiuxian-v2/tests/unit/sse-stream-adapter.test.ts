@@ -179,6 +179,9 @@ describe('4.3 Stream adapter', () => {
         inventory: [],
         codex: [],
         relationships: {},
+        worldTime: Date.now(),
+        currentLocation: '新手村',
+        npcs: [],
       },
       deltas: { spirit: { value: 11 } },
     }))

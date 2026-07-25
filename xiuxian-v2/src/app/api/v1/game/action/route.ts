@@ -166,12 +166,13 @@ export async function POST(req: Request): Promise<Response> {
     playerId,
     playerName,
     input,
-    mode: mode === 'prepare' ? 'action' : mode,
+    mode,
     idempotencyKey: idempotencyKey ?? createIdGenerator().idempotencyKey(),
+    // HACK: 开发阶段硬编码DeepSeek配置，上线前改回读环境变量。2026-07-24
     llmConfig: {
-      apiKey: process.env.LLM_API_KEY ?? '',
-      baseUrl: process.env.LLM_BASE_URL ?? 'https://api.openai.com/v1',
-      modelName: process.env.LLM_MODEL ?? 'gpt-4o-mini',
+      apiKey: process.env.LLM_API_KEY || 'sk-ec96eaf6b85e4854a57970495d2a6c0b',
+      baseUrl: process.env.LLM_BASE_URL || 'https://api.deepseek.com/v1',
+      modelName: process.env.LLM_MODEL || 'deepseek-chat',
     },
     signal: req.signal,
   }
@@ -247,6 +248,9 @@ export async function POST(req: Request): Promise<Response> {
                 relationships: {},
                 situations: [],
                 foreshadowings: [],
+                worldTime: BigInt(Date.now()),
+                currentLocation: '新手村',
+                npcs: [],
                 createdAt: new Date(),
                 updatedAt: new Date(),
               },
@@ -298,6 +302,9 @@ export async function POST(req: Request): Promise<Response> {
             relationships: {},
             situations: [],
             foreshadowings: [],
+            worldTime: Date.now(),
+            currentLocation: '新手村',
+            npcs: [],
             createdAt: Date.now(),
             updatedAt: Date.now(),
           }])

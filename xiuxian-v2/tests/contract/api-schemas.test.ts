@@ -202,6 +202,9 @@ describe('2.1d Success payload schemas', () => {
         inventory: [],
         codex: [],
         relationships: {},
+        worldTime: 1700000000000,
+        currentLocation: '新手村',
+        npcs: [],
       },
     }
     expect(PlayerResponseSchema.safeParse(p).success).toBe(true)
@@ -220,6 +223,9 @@ describe('2.1d Success payload schemas', () => {
           spiritual_root: '', mental_state: '', reputation: 0,
         },
         inventory: [], codex: [], relationships: {},
+        worldTime: 1700000000000,
+        currentLocation: '新手村',
+        npcs: [],
       },
     }
     expect(PlayerResponseSchema.safeParse(p).success).toBe(false)
@@ -377,6 +383,9 @@ describe('2.1g SSE event payloads', () => {
         spiritual_root: '杂灵根', mental_state: '平静', reputation: 0,
       },
       inventory: [], codex: [], relationships: {},
+      worldTime: 1700000000000,
+      currentLocation: '新手村',
+      npcs: [],
     }
     expect(StateUpdatePayloadSchema.safeParse({
       player: p, deltas: { stats: { hp_change: -10 } },

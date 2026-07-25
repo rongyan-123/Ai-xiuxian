@@ -97,7 +97,7 @@ function sseCompleted(reply: string, seq: number): string {
 }
 
 function sseFailed(code: string, detail: string, seq: number, retryable = false): string {
-  return sseEnvelope(seq, 'failed', { type: 'failed', title: code, status: code === 'VALIDATION_ERROR' ? 422 : 500, detail, code, requestId: REQ_ID, retryable })
+  return sseEnvelope(seq, 'failed', { type: 'about:blank', title: code, status: code === 'VALIDATION_ERROR' ? 422 : 500, detail, code, requestId: REQ_ID, retryable })
 }
 
 function sseCancelled(seq: number, reason = 'User cancelled'): string {

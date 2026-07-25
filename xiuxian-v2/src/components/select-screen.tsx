@@ -1,9 +1,9 @@
-﻿'use client'
+'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useGameStore } from '@/stores/game'
+import { useGameStream } from '@/client/use-game-stream'
 import { Loader2 } from 'lucide-react'
-import { parseSSEChunk, parseSSEJson } from '@/client/sse-parser'
 
 type Trope = {
   id: string
@@ -32,127 +32,70 @@ const tropes: Trope[] = [
 ]
 
 export function SelectScreen() {
-  const { setPhase, setPlayer, addMessage, removeMessage, setLoading, setCurrentEvent, player, addNotification } = useGameStore()
+  const { setPhase, addMessage, removeMessage, setLoading, setCurrentEvent, player } = useGameStore()
   const [selected, setSelected] = useState<string | null>(null)
-  const [loading, setLocalLoading] = useState(false)
-  const [stepLogs, setStepLogs] = useState<string[]>([])
+  const errorInputRef = useRef<string>("")
 
-  const addErrorMessage = (content: string, userInput: string) => {
-    const msgs = useGameStore.getState().chatHistory
-    const lastMsg = msgs[msgs.length - 1]
-    if (lastMsg?.error) removeMessage(lastMsg.id)
-    addMessage({
-      id: 'err-' + Date.now(),
-      role: 'assistant',
-      content,
-      timestamp: Date.now(),
-      error: true,
-      userInput,
-    })
-  }
+  // ── useGameStream — 集中 SSE 处理 ──────────────────────────────────────
+  const { send, status, streamingText, stepLogs } = useGameStream({
+    onCompleted: (replyText) => {
+      // 流完成后才切换到 PLAYING 阶段，SelectScreen 保持挂载直到此刻
+      // 将开局身世叙事写入 chatHistory，作为 ChatPanel 的首个气泡
+      if (replyText && replyText.trim()) {
+        addMessage({
+          id: 'ai-open-' + Date.now(),
+          role: 'assistant',
+          content: replyText,
+          timestamp: Date.now(),
+        })
+      }
+      setLoading(false)
+      setCurrentEvent('')
+      setPhase("PLAYING")
+    },
+    onFailed: (err) => {
+      const input = errorInputRef.current
+      const msgs = useGameStore.getState().chatHistory
+      const lastMsg = msgs[msgs.length - 1]
+      if (lastMsg?.error) removeMessage(lastMsg.id)
+      addMessage({
+        id: 'err-' + Date.now(),
+        role: 'assistant',
+        content: err.message || '请求失败，请重试',
+        timestamp: Date.now(),
+        error: true,
+        userInput: input,
+      })
+      setLoading(false)
+      setCurrentEvent('')
+      setPhase("PLAYING")
+    },
+  })
+
+  const loading = status === 'submitting' || status === 'streaming'
 
   const getCardClass = (id: string) => {
     const base = "p-3 md:p-4 rounded-xl border cursor-pointer transition-all duration-200 hover:scale-[1.02]"
-    if (selected === id) return base + "border-amber-500 bg-zinc-800/80 shadow-lg shadow-amber-500/20" 
-    return base + "border-zinc-700 bg-zinc-900 hover:bg-zinc-800/50" 
+    if (selected === id) return base + "border-amber-500 bg-zinc-800/80 shadow-lg shadow-amber-500/20"
+    return base + "border-zinc-700 bg-zinc-900 hover:bg-zinc-800/50"
   }
 
-  const handleSelect = async () => {
+  const handleSelect = () => {
     if (!selected || loading || !player) return
     const trope = tropes.find(t => t.id === selected)
     if (!trope) return
-    setPhase("PLAYING");
-    setLocalLoading(true)
-    setLoading(true)
-    setStepLogs([])
+
     const userInput = '\n[STREAM_START]\n[GENRE]' + trope.id + '\n[TITLE]' + trope.name + '\n[HINT]' + trope.openingHint + '\n[STREAM_END]\n'
+    errorInputRef.current = userInput
+
+    setLoading(true)
     addMessage({ id: 'sys-' + Date.now(), role: 'system', content: '选择了开局流派: ' + trope.name, timestamp: Date.now() })
-    try {
-      const res = await fetch("/api/v1/game/action", {
-        method: "POST" ,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          input: userInput,
-          playerName: player?.name || '无名' ,
-          playerId: player?.id || String(Date.now()),
-          mode: 'prepare',
-          idempotencyKey: `idem-prepare-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        })
-      })
-      if (!res.ok) {
-        const errBody = await res.text()
-        let errMsg = '请求失败 (' + res.status + ')'
-        try { errMsg = JSON.parse(errBody).error || errMsg } catch { /* body is not JSON, use default errMsg */ }
-        addErrorMessage(errMsg, userInput)
-        return
-      }
-      const reader = res.body?.getReader()
-      if (!reader) return
-      let sseBuffer = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        const { events, buffer: newBuffer } = parseSSEChunk(value, sseBuffer)
-        sseBuffer = newBuffer
-
-        for (const rawEvent of events) {
-          const parsed = parseSSEJson(rawEvent)
-          if (!parsed) continue
-
-          const evt = parsed.type
-          const payload = parsed.payload as Record<string, unknown>
-
-          if (evt === 'completed') {
-            // API v1 terminal: game turn succeeded
-            const reply = payload.reply as string | undefined
-            if (reply) {
-              addMessage({ id: 'ai-' + Date.now(), role: 'assistant', content: reply, timestamp: Date.now() })
-            }
-          } else if (evt === 'state_update') {
-            if (payload.player) setPlayer(payload.player as any)
-          } else if (evt === 'failed') {
-            const detail = payload.detail as string | undefined
-            const message = detail ?? '准备失败'
-            addErrorMessage(message, userInput)
-          } else if (evt === 'accepted') {
-            // API v1: handshake — no UI action needed
-          } else if (evt === 'reply') {
-            // Legacy fallback (old /api/game/action format)
-            const reply = payload.reply as string | undefined
-            if (reply) {
-              addMessage({ id: 'ai-' + Date.now(), role: 'assistant', content: reply, timestamp: Date.now() })
-            }
-            if (payload.player) setPlayer(payload.player as any)
-          } else if (evt === 'step') {
-            const label = payload.label as string | undefined
-            if (label) {
-              setCurrentEvent(label)
-              setStepLogs(prev => [...prev, label])
-            }
-          } else if (evt === 'codex') {
-            const ce = payload
-            useGameStore.getState().addCodex({id:Date.now().toString(),name:ce.name as string,entry_type:(ce.entry_type as string)||"general",description:(ce.description as string)||"",metadata:(ce.metadata as Record<string,unknown>)||{},timestamp:(ce.timestamp as number)||Date.now()})
-            addNotification('codex')
-          } else if (evt === 'journal') {
-            const je = payload
-            useGameStore.getState().addJournal({id:Date.now().toString(),title:je.title as string,content:je.content as string,entry_type:(je.entry_type as string)||"general",timestamp:(je.timestamp as number)||Date.now()})
-            addNotification('journal')
-          } else if (evt === 'error') {
-            // Legacy fallback (old format error)
-            const message = payload.message as string | undefined
-            if (message) addErrorMessage(message, userInput)
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Stream error:' , err)
-      addErrorMessage('[Connection Error] ' + (err instanceof Error ? err.message : String(err)), userInput)
-    } finally {
-      setLocalLoading(false)
-      setLoading(false)
-      setCurrentEvent('')
-    }
+    send({
+      input: userInput,
+      playerId: player.id,
+      playerName: player.name,
+      mode: 'prepare',
+    })
   }
 
   return (
@@ -173,9 +116,19 @@ export function SelectScreen() {
         </div>
         <div className="flex justify-center">
           <button onClick={handleSelect} disabled={!selected || loading} className="px-6 md:px-8 py-2.5 md:py-3 text-base md:text-lg bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-bold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all">
-            {loading ? <><Loader2 className="h-4 w-4 md:h-5 md:w-5 mr-1.5 md:mr-2 animate-spin" />天道推演中...</> : '确认选择'}
+            {loading ? <><Loader2 className="h-4 w-4 md:h-5 md:w-5 mr-1.5 md:mr-2 animate-spin inline" />天道推演中...</> : '确认选择'}
           </button>
         </div>
+
+        {/* 流式文本 — 准备阶段的 AI 叙述 */}
+        {streamingText && (
+          <div className="max-w-2xl mx-auto p-4 rounded-xl bg-zinc-900/70 border border-emerald-500/10 text-sm text-zinc-300 leading-relaxed font-chinese">
+            {streamingText}
+            {loading && <span className="inline-block w-1.5 h-4 bg-emerald-400/70 ml-0.5 animate-pulse align-middle" />}
+          </div>
+        )}
+
+        {/* 步骤日志 — 显示 AI 执行过程 */}
         {stepLogs.length > 0 && (
           <div className="max-w-md mx-auto space-y-0.5 max-h-48 overflow-y-auto bg-zinc-900/50 rounded-lg p-3 border border-zinc-800">
             {stepLogs.map((log, i) => (

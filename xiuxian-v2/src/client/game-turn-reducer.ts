@@ -88,11 +88,16 @@ export interface CancelAction {
   type: 'CANCEL'
 }
 
+export interface FailAction {
+  type: 'FAIL'
+  error: GameTurnError
+}
+
 export interface ResetAction {
   type: 'RESET'
 }
 
-export type GameTurnAction = SubmitAction | SSEEventAction | CancelAction | ResetAction
+export type GameTurnAction = SubmitAction | SSEEventAction | CancelAction | FailAction | ResetAction
 
 // ─── Terminal Events ────────────────────────────────────────────────────────
 
@@ -108,6 +113,8 @@ export function gameTurnReducer(state: GameTurnState, action: GameTurnAction): G
       return handleSSEEvent(state, action.event)
     case 'CANCEL':
       return handleCancel(state)
+    case 'FAIL':
+      return handleFail(state, action.error)
     case 'RESET':
       return initialGameTurnState
     default:
@@ -146,6 +153,18 @@ function handleCancel(state: GameTurnState): GameTurnState {
 
   // Already cancelling, completed, failed, cancelled, or idle — no-op
   return state
+}
+
+function handleFail(state: GameTurnState, error: GameTurnError): GameTurnState {
+  // Only transition from submitting or streaming to failed
+  if (state.status !== 'submitting' && state.status !== 'streaming') {
+    return state
+  }
+  return {
+    ...state,
+    status: 'failed',
+    error,
+  }
 }
 
 function handleSSEEvent(state: GameTurnState, event: ParsedSSEEvent<Record<string, unknown>>): GameTurnState {

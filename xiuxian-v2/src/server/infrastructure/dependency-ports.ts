@@ -20,7 +20,19 @@ export interface LLMProviderConfig {
 }
 
 export interface LLMRequest {
-  messages: Array<{ role: string; content: string }>
+  messages: Array<{
+    role: string
+    content: string | null
+    tool_calls?: Array<{
+      id: string
+      type: 'function'
+      function: {
+        name: string
+        arguments: string
+      }
+    }>
+    tool_call_id?: string
+  }>
   tools?: Array<{
     name: string
     description: string

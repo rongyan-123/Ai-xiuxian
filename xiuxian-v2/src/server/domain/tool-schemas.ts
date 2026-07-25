@@ -9,6 +9,55 @@ import { z } from 'zod/v4'
 
 // ── Shared enumerations ─────────────────────────────────────────────────
 
+/**
+ * 已知的 camelCase → snake_case 键名映射。
+ * LLM 可能按工具目录的旧参数名输出 camelCase，需要在此统一转换。
+ */
+const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
+  npcId: 'npcId',
+  playerGoal: 'player_goal',
+  possibleOutcomes: 'possible_outcomes',
+  linkedSituation: 'linked_situation',
+  situationId: 'situation_id',
+  actualOutcome: 'actual_outcome',
+  relatedSituation: 'related_situation',
+  resolveNote: 'resolve_note',
+  entryType: 'entry_type',
+  playerName: 'player_name',
+  newRealm: 'new_realm',
+  realmChange: 'realm_change',
+}
+
+/**
+ * 将对象中的 camelCase 键转换为 snake_case（仅限已知映射）。
+ * 保留原始键，优先使用 snake_case 版本的值。
+ */
+function normalizeCamelKeys(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+  const obj = raw as Record<string, unknown>
+  const result = { ...obj }
+  for (const [camel, snake] of Object.entries(CAMEL_TO_SNAKE_KEYS)) {
+    if (camel in obj && !(snake in obj)) {
+      result[snake] = obj[camel]
+      delete result[camel]
+    }
+  }
+  // 递归处理嵌套对象
+  for (const key of Object.keys(result)) {
+    const val = result[key]
+    if (val && typeof val === 'object') {
+      if (Array.isArray(val)) {
+        result[key] = val.map((item) =>
+          typeof item === 'object' && !Array.isArray(item) ? normalizeCamelKeys(item) : item,
+        )
+      } else {
+        result[key] = normalizeCamelKeys(val)
+      }
+    }
+  }
+  return result
+}
+
 const ItemGrade = z.enum([
   '黄阶下品', '黄阶中品', '黄阶上品',
   '玄阶下品', '玄阶中品', '玄阶上品',
@@ -38,6 +87,25 @@ const CodexEntryType = z.enum(['npc', 'location', 'item', 'sect'])
 const JournalEntryType = z.enum(['story_start', 'major_twist', 'story_end', 'general'])
 
 // ── Individual tool argument schemas ────────────────────────────────────
+
+/**
+ * 规范化枚举字段值，处理 LLM 可能输出的非标准值。
+ * 返回有效枚举值或默认值。
+ */
+function normalizeEnumField(
+  value: unknown,
+  validValues: string[],
+  defaultValue: string,
+): string {
+  if (typeof value !== 'string') return defaultValue
+  // 精确匹配
+  if (validValues.includes(value)) return value
+  // 模糊匹配：包含关键词
+  for (const v of validValues) {
+    if (value.includes(v) || v.includes(value)) return v
+  }
+  return defaultValue
+}
 
 const BackpackAddItemsArgs = z.object({
   items: z.array(z.object({
@@ -116,9 +184,21 @@ const UpdateRelationshipArgs = z.object({
   change: z.number(),
 })
 
-const ChangeLocationArgs = z.object({
-  location: z.string(),
-})
+const ChangeLocationArgs = z.preprocess(
+  (raw: unknown) => {
+    const obj = raw as Record<string, unknown> | null
+    if (!obj || typeof obj !== 'object') return raw
+    // 标准化: where/to → location
+    const loc = obj.where ?? obj.to ?? obj.location
+    if (typeof loc === 'string') {
+      return { ...obj, location: loc }
+    }
+    return obj
+  },
+  z.object({
+    location: z.string(),
+  }),
+)
 
 const CheckBreakthroughArgs = z.object({
   result: BreakthroughResult,
@@ -126,95 +206,165 @@ const CheckBreakthroughArgs = z.object({
   realm_change: z.string().optional(),
 })
 
-const GenerateNPCArgs = z.object({
-  npcs: z.array(z.object({
-    name: z.string(),
-    title: z.string().optional(),
-    realm: z.string(),
-    alignment: Alignment,
-    sect: z.string(),
-    personality: z.string(),
-    relationship: z.number(),
-    description: z.string(),
-  })),
+const NpcFields = z.object({
+  name: z.string(),
+  title: z.string().optional(),
+  realm: z.string(),
+  alignment: Alignment,
+  sect: z.string(),
+  personality: z.string(),
+  relationship: z.number(),
+  description: z.string(),
 })
 
-const GenerateLocationArgs = z.object({
-  locations: z.array(z.object({
-    name: z.string(),
-    region: z.string(),
-    danger_level: DangerLevel,
-    description: z.string(),
-    power_distribution: z.string(),
-    level_range: z.string(),
-    rules: z.string(),
-    peace_orno: PeaceLevel,
-    inhabitants: z.array(z.string()),
-    bound_items: z.array(z.string()),
-    bound_locations: z.array(z.string()),
-  })),
-})
+const GenerateNPCArgs = z.preprocess(
+  (raw: unknown) => {
+    const obj = normalizeCamelKeys(raw) as Record<string, unknown> | null
+    if (!obj || typeof obj !== 'object') return obj
+    // 标准化: npc（单对象）→ npcs（数组）
+    if (obj.npc && !obj.npcs) {
+      return { ...obj, npcs: [obj.npc], npc: undefined }
+    }
+    return obj
+  },
+  z.object({
+    npcs: z.array(NpcFields),
+  }),
+)
 
-const GenerateSectArgs = z.object({
-  sects: z.array(z.object({
-    name: z.string(),
-    alignment: Alignment,
-    power_level: z.string(),
-    master: z.string(),
-    master_realm: z.string(),
-    description: z.string(),
-    specialties: z.string().optional(),
-  })),
-})
+const GenerateLocationArgs = z.preprocess(
+  (raw: unknown) => {
+    const obj = raw as Record<string, unknown> | null
+    if (!obj || typeof obj !== 'object') return raw
+    // 标准化: location（单对象）→ locations（数组）
+    if (obj.location && !obj.locations) {
+      const loc = obj.location
+      // location 可能是对象或字符串
+      const locObj = typeof loc === 'string' ? { name: loc } : loc
+      return { ...obj, locations: Array.isArray(locObj) ? locObj : [locObj], location: undefined }
+    }
+    // 标准化: locations 是单对象而非数组 → 包装成数组
+    if (obj.locations && !Array.isArray(obj.locations)) {
+      obj.locations = [obj.locations]
+    }
+    // 标准化: locations 数组中的每个元素，规范化 enum 字段
+    if (Array.isArray(obj.locations)) {
+      obj.locations = (obj.locations as Array<Record<string, unknown>>).map((loc) => ({
+        ...loc,
+        danger_level: normalizeEnumField(loc.danger_level, ['安全', '低危', '中危', '高危', '绝地'], '低危'),
+        peace_orno: normalizeEnumField(loc.peace_orno, ['和平', '冲突', '战争', '混乱'], '和平'),
+      }))
+    }
+    return obj
+  },
+  z.object({
+    locations: z.array(z.object({
+      name: z.string(),
+      region: z.string(),
+      danger_level: DangerLevel,
+      description: z.string(),
+      power_distribution: z.string(),
+      level_range: z.string(),
+      rules: z.string(),
+      peace_orno: PeaceLevel,
+      inhabitants: z.array(z.string()),
+      bound_items: z.array(z.string()),
+      bound_locations: z.array(z.string()),
+    })),
+  }),
+)
 
-const GenerateItemArgs = z.object({
-  items: z.array(z.object({
-    name: z.string(),
-    type: ItemType,
-    grade: ItemGrade,
-    description: z.string(),
-    count: z.number(),
-    value: z.number(),
-    effects: z.string().optional(),
-  })),
-})
+const GenerateSectArgs = z.preprocess(
+  (raw: unknown) => {
+    const obj = raw as Record<string, unknown> | null
+    if (!obj || typeof obj !== 'object') return raw
+    if (obj.sect && !obj.sects) {
+      return { ...obj, sects: [obj.sect], sect: undefined }
+    }
+    return obj
+  },
+  z.object({
+    sects: z.array(z.object({
+      name: z.string(),
+      alignment: Alignment,
+      power_level: z.string(),
+      master: z.string(),
+      master_realm: z.string(),
+      description: z.string(),
+      specialties: z.string().optional(),
+    })),
+  }),
+)
 
-const WriteCodexArgs = z.object({
+const GenerateItemArgs = z.preprocess(
+  (raw: unknown) => {
+    const obj = raw as Record<string, unknown> | null
+    if (!obj || typeof obj !== 'object') return raw
+    if (obj.item && !obj.items) {
+      return { ...obj, items: [obj.item], item: undefined }
+    }
+    return obj
+  },
+  z.object({
+    items: z.array(z.object({
+      name: z.string(),
+      type: ItemType,
+      grade: ItemGrade,
+      description: z.string(),
+      count: z.number(),
+      value: z.number(),
+      effects: z.string().optional(),
+    })),
+  }),
+)
+
+const WriteCodexArgs = z.preprocess(normalizeCamelKeys, z.object({
   name: z.string(),
   entry_type: CodexEntryType,
   description: z.string(),
   metadata: z.record(z.string(), z.unknown()).optional(),
-})
+}))
 
-const WriteJournalArgs = z.object({
+const WriteJournalArgs = z.preprocess(normalizeCamelKeys, z.object({
   title: z.string(),
   content: z.string(),
   entry_type: JournalEntryType.optional(),
-})
+}))
 
-const UpdateSituationArgs = z.object({
-  action: SituationAction,
-  situation_id: z.string().optional(),
-  title: z.string().optional(),
-  type: SituationType.optional(),
-  trigger: z.string().optional(),
-  npcs: z.array(z.string()).optional(),
-  player_goal: z.string().optional(),
-  possible_outcomes: z.array(z.string()).optional(),
-  linked_situation: z.string().optional(),
-  status: SituationStatus.optional(),
-  actual_outcome: z.string().optional(),
-  new_outcome: z.string().optional(),
-})
+const UpdateSituationArgs = z.preprocess(
+  (raw: unknown) => {
+    const obj = normalizeCamelKeys(raw) as Record<string, unknown> | null
+    if (!obj || typeof obj !== 'object') return obj
+    // 缺失 action 时默认为 'create'
+    if (!obj.action) {
+      ;(obj as Record<string, unknown>).action = 'create'
+    }
+    return obj
+  },
+  z.object({
+    action: SituationAction,
+    situation_id: z.string().optional(),
+    title: z.string().optional(),
+    type: SituationType.optional(),
+    trigger: z.string().optional(),
+    npcs: z.array(z.string()).optional(),
+    player_goal: z.string().optional(),
+    possible_outcomes: z.array(z.string()).optional(),
+    linked_situation: z.string().optional(),
+    status: SituationStatus.optional(),
+    actual_outcome: z.string().optional(),
+    new_outcome: z.string().optional(),
+  }),
+)
 
-const CreateForeshadowingArgs = z.object({
+const CreateForeshadowingArgs = z.preprocess(normalizeCamelKeys, z.object({
   foreshadowing_id: z.string().optional(),
   title: z.string().optional(),
   description: z.string().optional(),
   related_situation: z.string().optional(),
   resolved: z.boolean().default(false),
   resolve_note: z.string().optional(),
-})
+}))
 
 const SearchHistoryArgs = z.object({
   query: z.string(),
@@ -398,8 +548,7 @@ export interface ToolValidationError {
  * Checks:
  * 1. Every tool name is known
  * 2. Every tool's args conform to its schema
- * 3. No duplicate tool calls (same name used twice)
- * 4. No contradictory tool calls (heal + damage in same turn, etc.)
+ * 3. No contradictory tool calls (heal + damage in same turn, etc.)
  */
 export function validateToolCalls(
   rawCalls: unknown,
@@ -409,7 +558,6 @@ export function validateToolCalls(
   }
 
   const parsed: Array<{ name: ToolName; args: Record<string, unknown> }> = []
-  const seen = new Set<string>()
 
   for (let i = 0; i < rawCalls.length; i++) {
     const call = rawCalls[i]
@@ -436,17 +584,6 @@ export function validateToolCalls(
         toolName: name,
       }
     }
-
-    // Check for duplicates (same tool called twice in one turn)
-    if (seen.has(name)) {
-      return {
-        valid: false,
-        code: 'DUPLICATE_TOOL',
-        message: `Duplicate tool call: "${name}" cannot be called more than once per turn`,
-        toolName: name,
-      }
-    }
-    seen.add(name)
 
     // Validate args against the tool's schema
     const schema = TOOL_SCHEMAS[name]

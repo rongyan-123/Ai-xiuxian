@@ -16,6 +16,8 @@ export interface GameState {
   currentEvent: string
   notifications: Record<string, number>
   pendingInput: string
+  stepLogs: string[]
+  streamingText: string
 
   setPhase: (phase: GameState["phase"]) => void
   setPlayer: (player: IPlayer) => void
@@ -33,6 +35,9 @@ export interface GameState {
   clearNotification: (key: string) => void
   setPendingInput: (input: string) => void
   resetGame: () => void
+  appendStepLog: (label: string) => void
+  setStepLogs: (logs: string[]) => void
+  setStreamingText: (text: string) => void
 }
 
 export const useGameStore = create<GameState>()(
@@ -48,6 +53,8 @@ export const useGameStore = create<GameState>()(
       currentEvent: "",
       notifications: {},
       pendingInput: "",
+      stepLogs: [],
+      streamingText: "",
 
       setPhase: (phase) => set({ phase }),
       setPlayer: (player) => set((s) => ({ player: player, codex: (player && player.codex) ? player.codex : s.codex })),
@@ -83,7 +90,10 @@ export const useGameStore = create<GameState>()(
       })),
       setPendingInput: (pendingInput) => set({ pendingInput }),
       resetGame: () => set({ player: null, chatHistory: [],
-      journal: [], codex: [], phase: "INIT", currentView: "chat", notifications: {}, pendingInput: "" }),
+      journal: [], codex: [], phase: "INIT", currentView: "chat", notifications: {}, pendingInput: "", stepLogs: [], streamingText: "" }),
+      appendStepLog: (label) => set((s) => ({ stepLogs: [...s.stepLogs, label] })),
+      setStepLogs: (stepLogs) => set({ stepLogs }),
+      setStreamingText: (streamingText) => set({ streamingText }),
     }),
     {
       name: "xiuxian-game",

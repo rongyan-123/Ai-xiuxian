@@ -7,7 +7,7 @@
  * Application code depends on these interfaces; infrastructure adapters
  * implement them.
  */
-import type { ICharacterStats, IInventoryItem, Situation, Foreshadowing } from '@/types'
+import type { ICharacterStats, IInventoryItem, Situation, Foreshadowing, T1Npc } from '@/types'
 
 // ── Player snapshot (immutable view of persisted player state) ──────────
 
@@ -23,6 +23,9 @@ export interface PlayerSnapshot {
   relationships: Record<string, number>
   situations: Situation[]
   foreshadowings: Foreshadowing[]
+  worldTime: number
+  currentLocation: string
+  npcs: T1Npc[]
   createdAt: number
   updatedAt: number
 }

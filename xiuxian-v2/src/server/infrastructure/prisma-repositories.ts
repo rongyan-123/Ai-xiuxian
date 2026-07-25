@@ -16,7 +16,7 @@ import type {
   OutboxRepository,
   OutboxEntry,
 } from './ports'
-import type { ICharacterStats, IInventoryItem, Situation, Foreshadowing } from '@/types'
+import type { ICharacterStats, IInventoryItem, Situation, Foreshadowing, T1Npc } from '@/types'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -32,6 +32,9 @@ function toPlayerSnapshot(row: {
   relationships: unknown
   situations: unknown
   foreshadowings: unknown
+  worldTime?: bigint | null
+  currentLocation?: string | null
+  npcs?: unknown
   createdAt: Date
   updatedAt: Date
 }): PlayerSnapshot {
@@ -47,6 +50,9 @@ function toPlayerSnapshot(row: {
     relationships: (row.relationships as Record<string, number>) || {},
     situations: (row.situations as Situation[]) || [],
     foreshadowings: (row.foreshadowings as Foreshadowing[]) || [],
+    worldTime: row.worldTime != null ? Number(row.worldTime) : Date.now(),
+    currentLocation: row.currentLocation ?? '新手村',
+    npcs: (row.npcs as T1Npc[]) || [],
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
   }
@@ -110,6 +116,9 @@ export function createPrismaPlayerRepository(prisma: PrismaClient): PlayerReposi
             relationships: snapshot.relationships as any,
             situations: snapshot.situations as any,
             foreshadowings: snapshot.foreshadowings as any,
+            worldTime: BigInt(snapshot.worldTime),
+            currentLocation: snapshot.currentLocation,
+            npcs: snapshot.npcs as any,
           },
         })
 

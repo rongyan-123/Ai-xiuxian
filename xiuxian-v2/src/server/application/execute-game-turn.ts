@@ -43,7 +43,7 @@ export interface GameTurnRequest {
   playerId: string
   playerName: string
   input: string
-  mode: 'action' | 'dialogue' | 'exploration'
+  mode: 'action' | 'dialogue' | 'exploration' | 'prepare'
   idempotencyKey: string
   llmConfig: LLMProviderConfig
   signal?: AbortSignal

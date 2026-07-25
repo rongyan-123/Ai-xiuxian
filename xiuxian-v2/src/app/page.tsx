@@ -30,7 +30,7 @@ export default function Home() {
   }
 
   return (
-    <main className="flex h-screen overflow-hidden bg-zinc-950">
+    <main className="flex h-full overflow-hidden bg-zinc-950">
       {/* === 桌面端：三栏布局 (md及以上) === */}
       <div className="hidden md:flex w-full h-full">
         <GameSidebar />

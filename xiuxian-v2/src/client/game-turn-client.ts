@@ -27,7 +27,7 @@ export interface GameTurnRequest {
   input: string
   playerId: string
   /** 'action' | 'prepare' — defaults to 'action' */
-  mode?: string
+  mode?: 'action' | 'prepare' | string
   playerName?: string
   idempotencyKey?: string
 }
@@ -110,7 +110,7 @@ export function createGameTurnStream(
       if (problemDetails) {
         throw {
           code: problemDetails.code ?? 'PROTOCOL_ERROR',
-          message: problemDetails.detail ?? problemDetails.title,
+          message: problemDetails.detail ?? problemDetails.title ?? `Server returned ${response.status} ${response.statusText}`,
           status: response.status,
           retryable: problemDetails.retryable ?? false,
           problemDetails,
@@ -162,8 +162,18 @@ export function createGameTurnStream(
         buffer = newBuffer
 
         for (const rawEvent of events) {
+          // SSE raw event: { type, data, id, retry }
+          // The data field is a JSON string containing the envelope
+          let envelope: Record<string, unknown>
+          try {
+            envelope = JSON.parse(rawEvent.data) as Record<string, unknown>
+          } catch {
+            // Skip malformed JSON lines
+            continue
+          }
+
           // Validate against the discriminated union schema
-          const parsed = SSEEventSchema.safeParse(rawEvent)
+          const parsed = SSEEventSchema.safeParse(envelope)
           if (!parsed.success) {
             // Malformed event — protocol error
             throw createStreamError(

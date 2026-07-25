@@ -401,19 +401,15 @@ describe('Tool schemas — unknown tools', () => {
 // ── Duplicate tools ─────────────────────────────────────────────────────
 
 describe('Tool schemas — duplicate detection', () => {
-  it('same Modify_Stats called twice', () => {
+  it('same Modify_Stats called twice — now allowed', () => {
     const r = validateToolCalls([
       validCall('Modify_Stats', { hp_change: -10 }),
       validCall('Modify_Stats', { mp_change: -5 }),
     ])
-    expect(r.valid).toBe(false)
-    if (!r.valid) {
-      expect(r.code).toBe('DUPLICATE_TOOL')
-      expect(r.message).toContain('Modify_Stats')
-    }
+    expect(r.valid).toBe(true)
   })
 
-  it('same Backpack_additems called twice', () => {
+  it('same Backpack_additems called twice — now allowed', () => {
     const r = validateToolCalls([
       validCall('Backpack_additems', {
         items: [{ name: '灵石', count: 5 }],
@@ -422,18 +418,16 @@ describe('Tool schemas — duplicate detection', () => {
         items: [{ name: '丹药', count: 1 }],
       }),
     ])
-    expect(r.valid).toBe(false)
-    if (!r.valid) expect(r.code).toBe('DUPLICATE_TOOL')
+    expect(r.valid).toBe(true)
   })
 
-  it('three duplicates — fails on first duplicate', () => {
+  it('three same-type calls — now allowed', () => {
     const r = validateToolCalls([
       validCall('Write_Journal', { title: 'a', content: 'b' }),
       validCall('Write_Journal', { title: 'c', content: 'd' }),
       validCall('Write_Journal', { title: 'e', content: 'f' }),
     ])
-    expect(r.valid).toBe(false)
-    if (!r.valid) expect(r.code).toBe('DUPLICATE_TOOL')
+    expect(r.valid).toBe(true)
   })
 })
 

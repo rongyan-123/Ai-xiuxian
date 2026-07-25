@@ -361,8 +361,8 @@ export const MODIFY_INVENTORY: WorldActionTool = {
   metadata: {
     params: {
       who: { type: 'string', required: false, description: '目标：player/npc_id，默认player' },
-      additions: { type: 'Array<{name, type, grade, count, description?}>', required: false },
-      removals: { type: 'Array<{name, count}>', required: false },
+      additions: { type: 'Array<{name, type, grade, count: number, description?}>', required: false },
+      removals: { type: 'Array<{name, count: number}>', required: false },
       reason: { type: 'string', required: false, description: '变动原因（交易/掉落/消耗/赠送）' },
     },
     returns: {
@@ -447,15 +447,16 @@ export const CREATE_SITUATION: WorldActionTool = {
   execution: 'write',
   metadata: {
     params: {
-      title: { type: 'string', required: true },
-      type: { type: 'string', required: true, description: 'conflict/exploration/social/opportunity/mystery' },
+      action: { type: 'string', required: true, description: '"create"（创建新局面）/ "update_status" / "end" / "add_outcome"' },
+      title: { type: 'string', required: false },
+      type: { type: 'string', required: false, description: '"conflict"|"exploration"|"social"|"opportunity"|"mystery"' },
       npcs: { type: 'string[]', required: false },
-      playerGoal: { type: 'string', required: false },
-      possibleOutcomes: { type: 'string[]', required: false },
-      linkedSituation: { type: 'string', required: false },
+      player_goal: { type: 'string', required: false },
+      possible_outcomes: { type: 'string[]', required: false },
+      linked_situation: { type: 'string', required: false },
     },
     returns: {
-      situationId: 'string',
+      situation_id: 'string',
       status: 'string',
     },
   },
@@ -472,15 +473,15 @@ export const RESOLVE_SITUATION: WorldActionTool = {
   execution: 'write',
   metadata: {
     params: {
-      situationId: { type: 'string', required: true },
-      action: { type: 'string', required: true, description: 'update_status/end/add_outcome' },
+      situation_id: { type: 'string', required: true },
+      action: { type: 'string', required: true, description: '"update_status"|"end"|"add_outcome"' },
       status: { type: 'string', required: false },
-      actualOutcome: { type: 'string', required: false },
+      actual_outcome: { type: 'string', required: false },
     },
     returns: {
-      situationId: 'string',
-      previousStatus: 'string',
-      newStatus: 'string',
+      situation_id: 'string',
+      previous_status: 'string',
+      new_status: 'string',
     },
   },
 }
@@ -497,11 +498,11 @@ export const CREATE_FORESHADOWING: WorldActionTool = {
   execution: 'write',
   metadata: {
     params: {
-      title: { type: 'string', required: true },
-      description: { type: 'string', required: true },
-      relatedSituation: { type: 'string', required: false },
+      title: { type: 'string', required: false },
+      description: { type: 'string', required: false },
+      related_situation: { type: 'string', required: false },
       resolved: { type: 'boolean', required: false },
-      resolveNote: { type: 'string', required: false },
+      resolve_note: { type: 'string', required: false },
     },
     returns: {
       foreshadowingId: 'string',
@@ -550,7 +551,7 @@ export const GENERATE_NPC: WorldActionTool = {
   execution: 'write',
   metadata: {
     params: {
-      npcs: { type: 'Array<{name, title?, realm, alignment, sect, personality, relationship, description}>', required: true },
+      npcs: { type: 'Array<{name, title?, realm: string, alignment: "正道"|"魔道"|"中立", sect, personality, relationship: number, description}>', required: true },
     },
     returns: {
       created: 'Array<{npcId: string, name: string}>',
@@ -573,7 +574,7 @@ export const GENERATE_LOCATION: WorldActionTool = {
   execution: 'write',
   metadata: {
     params: {
-      locations: { type: 'Array<{name, region, danger_level, description, power_distribution, level_range, rules, inhabitants?, bound_locations?}>', required: true },
+      locations: { type: 'Array<{name, region, danger_level: "安全"|"低危"|"中危"|"高危"|"绝地", description, power_distribution, level_range, rules, peace_orno: "和平"|"冲突"|"战争"|"混乱", inhabitants: string[], bound_items: string[], bound_locations: string[]}>', required: true },
     },
     returns: {
       created: 'Array<{locationId: string, name: string}>',
@@ -595,7 +596,7 @@ export const ADD_JOURNAL_ENTRY: WorldActionTool = {
     params: {
       title: { type: 'string', required: true },
       content: { type: 'string', required: true },
-      entryType: { type: 'string', required: false, description: 'story_start/major_twist/story_end/general' },
+      entry_type: { type: 'string', required: false, description: '"story_start"|"major_twist"|"story_end"|"general"' },
     },
     returns: {
       journalId: 'string',
@@ -617,7 +618,7 @@ export const ADD_CODEX_ENTRY: WorldActionTool = {
   metadata: {
     params: {
       name: { type: 'string', required: true },
-      entryType: { type: 'string', required: true, description: 'npc/location/item/sect' },
+      entry_type: { type: 'string', required: true, description: '"npc"|"location"|"item"|"sect"' },
       description: { type: 'string', required: true },
       metadata: { type: 'Record<string, unknown>', required: false },
     },
@@ -844,7 +845,7 @@ export const GENERATE_SECT: WorldActionTool = {
   execution: 'write',
   metadata: {
     params: {
-      sects: { type: 'Array<{name, alignment, power_level, master, master_realm, description, specialties?}>', required: true },
+      sects: { type: 'Array<{name, alignment: "正道"|"魔道"|"中立", power_level, master, master_realm, description, specialties?}>', required: true },
     },
     returns: {
       created: 'Array<{name: string}>',
@@ -863,7 +864,7 @@ export const GENERATE_ITEM: WorldActionTool = {
   execution: 'write',
   metadata: {
     params: {
-      items: { type: 'Array<{name, type, grade, description, count, value, effects?}>', required: true },
+      items: { type: 'Array<{name, type: "丹药"|"法宝"|"材料"|"功法"|"杂物"|"特殊物品", grade: "黄阶下品"|"黄阶中品"|"黄阶上品"|"玄阶下品"|"玄阶中品"|"玄阶上品"|"地阶下品"|"地阶中品"|"地阶上品"|"天阶下品"|"天阶中品"|"天阶上品"|"无", description, count: number, value: number, effects?}>', required: true },
     },
     returns: {
       created: 'Array<{name: string, type: string, grade: string}>',
@@ -937,19 +938,188 @@ export function getGatedTools(): ToolDefinition[] {
   return Object.values(TOOL_REGISTRY).filter((t) => t.gate === 'enforce')
 }
 
+/** Look up a single tool definition by name */
+export function getToolDefinition(name: string): ToolDefinition | undefined {
+  const key = name as keyof typeof TOOL_REGISTRY
+  return TOOL_REGISTRY[key]
+}
+
 /** Build tool definitions for LLM API call (Anthropic/OpenAI format) */
 export function toLlmToolDefinitions(tools: ToolDefinition[]): Array<{
   name: string
   description: string
   input_schema: Record<string, unknown>
 }> {
-  return tools.map((t) => ({
-    name: t.name,
-    description: t.description,
-    // Schema is defined in tool-schemas.ts (Zod) — this is the LLM-facing shape
-    input_schema: (t.metadata?.params as Record<string, unknown>) ?? {
-      type: 'object',
-      properties: {},
-    },
-  }))
+  return tools.map((t) => {
+    const raw = (t.metadata?.params as Record<string, unknown>) ?? { type: 'object', properties: {} }
+    return {
+      name: t.name,
+      description: t.description,
+      input_schema: normalizeJsonSchema(raw),
+    }
+  })
+}
+
+/**
+ * Normalize internal schema to strict JSON Schema (Draft 2020-12).
+ * - Moves per-property `required` flags to top-level `required` array
+ * - Strips non-standard fields from property definitions
+ * - Handles both raw props objects and {type, properties} wrapped schemas
+ * - Expands Array<{...}> inline types into proper {type:"array", items:{...}} schemas
+ */
+function normalizeJsonSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  // 只用 'properties' 判断是否 schema wrapper，避免属性名恰好是 'type' 时误判
+  const hasSchemaWrapper = 'properties' in schema
+  const props = hasSchemaWrapper
+    ? (schema.properties as Record<string, Record<string, unknown>>)
+    : (schema as Record<string, Record<string, unknown>>)
+
+  if (!props || typeof props !== 'object') return schema
+
+  const required: string[] = []
+  const normalized: Record<string, Record<string, unknown>> = {}
+
+  for (const [key, prop] of Object.entries(props)) {
+    if (typeof prop !== 'object' || prop === null) {
+      normalized[key] = prop
+      continue
+    }
+    const { required: isRequired, ...rest } = prop
+    if (isRequired === true) {
+      required.push(key)
+    }
+    const entry = rest as Record<string, unknown>
+
+    // 处理内联 Array<{...}> 语法 → 生成 items schema
+    if (typeof entry.type === 'string') {
+      const parsed = parseArrayType(entry.type as string)
+      if (parsed) {
+        entry.type = 'array'
+        entry.items = parsed
+      } else {
+        entry.type = normalizeSchemaType(entry.type as string)
+        // string[] / number[] → array with primitive items
+        if (entry.type === 'array') {
+          const primitiveItems = primitiveArrayItems(entry._originalType as string ?? entry.type as string)
+          if (primitiveItems) {
+            ;(entry as Record<string, unknown>).items = primitiveItems
+          }
+        }
+      }
+    }
+    normalized[key] = entry
+  }
+
+  // 只有 schema wrapper 的 type 才可信；raw props 对象里的 "type" 是属性名
+  const schemaType = hasSchemaWrapper ? ((schema.type as string) ?? 'object') : 'object'
+  const result: Record<string, unknown> = {
+    type: schemaType,
+    properties: normalized,
+  }
+
+  if (required.length > 0) {
+    result.required = required
+  }
+
+  if ('additionalProperties' in schema) {
+    result.additionalProperties = schema.additionalProperties
+  }
+
+  return result
+}
+
+/**
+ * Parse Array<{field1, field2?, field3: type}> inline syntax into
+ * JSON Schema { type: 'object', properties: {...}, required: [...] }.
+ * Returns null if the type string doesn't match this pattern.
+ */
+function parseArrayType(typeStr: string): Record<string, unknown> | null {
+  const match = typeStr.match(/^Array<\{(.+)\}>$/)
+  if (!match) return null
+
+  const fieldsStr = match[1]
+  const fields = fieldsStr.split(',').map((f) => f.trim()).filter(Boolean)
+  const properties: Record<string, Record<string, unknown>> = {}
+  const required: string[] = []
+
+  for (const field of fields) {
+    let name = field
+    let fieldType = 'string'
+    let rawType = 'string'
+    let isOptional = false
+
+    // Handle ? (optional)
+    if (name.endsWith('?')) {
+      name = name.slice(0, -1)
+      isOptional = true
+    }
+
+    // Handle : type annotation
+    if (name.includes(':')) {
+      const parts = name.split(':')
+      name = parts[0].trim()
+      rawType = parts.slice(1).join(':').trim()
+      // Clean up quotes around enum values like "a"|"b"
+      const cleanType = rawType.replace(/"([^"]+)"/g, '$1')
+      if (cleanType.includes('|')) {
+        fieldType = 'string'
+        const enums = cleanType.split('|').map((e) => e.trim())
+        properties[name] = { type: 'string', enum: enums } as Record<string, unknown>
+        if (!isOptional) required.push(name)
+        continue
+      }
+      fieldType = mapInlineType(cleanType)
+    }
+
+    if (!isOptional) required.push(name)
+    const propDef: Record<string, unknown> = { type: fieldType }
+    // 数组类型补充 items
+    if (fieldType === 'array' && !isOptional) {
+      // string[] → items: { type: 'string' }; number[] → items: { type: 'number' }
+      propDef.items = { type: rawType === 'number[]' ? 'number' : 'string' }
+    }
+    properties[name] = propDef
+  }
+
+  const itemSchema: Record<string, unknown> = {
+    type: 'object',
+    properties,
+  }
+  if (required.length > 0) {
+    itemSchema.required = required
+  }
+  return itemSchema
+}
+
+function mapInlineType(t: string): string {
+  if (t === 'string[]') return 'array'
+  if (t === 'number[]') return 'array'
+  if (t.startsWith('Array<')) return 'array'
+  if (t === 'number') return 'number'
+  if (t === 'boolean') return 'boolean'
+  return 'string'
+}
+
+function primitiveArrayItems(originalType: string): Record<string, unknown> | null {
+  if (originalType === 'string[]') return { type: 'string' }
+  if (originalType === 'number[]') return { type: 'number' }
+  if (originalType === 'boolean[]') return { type: 'boolean' }
+  return null
+}
+
+/** 将 TS 风格的类型简写转为 JSON Schema 合法类型 */
+function normalizeSchemaType(type: string): string {
+  // 数组简写
+  if (type === 'string[]') return 'array'
+  if (type === 'number[]') return 'array'
+  if (type === 'boolean[]') return 'array'
+  if (type.startsWith('Array<')) return 'array'
+  // 非标准类型 → object
+  if (type === 'Record<string, unknown>') return 'object'
+  if (type === 'StatsSnapshot') return 'object'
+  if (type === 'Techniques') return 'object'
+  // 标准 JSON Schema 类型直接返回
+  if (['string', 'number', 'integer', 'boolean', 'object', 'array', 'null'].includes(type)) return type
+  // 默认当作 object
+  return 'object'
 }

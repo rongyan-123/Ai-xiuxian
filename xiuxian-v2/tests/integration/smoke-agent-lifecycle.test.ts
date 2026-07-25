@@ -118,6 +118,9 @@ function makeSmokePlayer(): PlayerSnapshot {
     relationships: {},
     situations: [],
     foreshadowings: [],
+    worldTime: Date.now(),
+    currentLocation: '新手村',
+    npcs: [],
     createdAt: Date.now(),
     updatedAt: Date.now(),
   }

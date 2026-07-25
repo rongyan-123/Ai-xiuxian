@@ -145,6 +145,9 @@ function makePlayer(overrides: Partial<PlayerSnapshot> = {}): PlayerSnapshot {
     relationships: {},
     situations: [],
     foreshadowings: [],
+    worldTime: NOW_MS,
+    currentLocation: '新手村',
+    npcs: [],
     createdAt: NOW_MS,
     updatedAt: NOW_MS,
     ...overrides,
@@ -155,7 +158,7 @@ function makeRequest(overrides: Partial<GameTurnRequest> = {}): GameTurnRequest 
   return {
     playerId: 'player-1',
     playerName: '测试修士',
-    input: '探索青云山',
+    input: '探索',
     mode: 'action',
     idempotencyKey: 'idem-001',
     llmConfig: {
@@ -170,8 +173,10 @@ function makeRequest(overrides: Partial<GameTurnRequest> = {}): GameTurnRequest 
 function makeDeps(opts: {
   overrides?: Partial<AgentLoopDeps>
   player?: PlayerSnapshot | null
+  /** LLM responses: [0]=planning, [1]=execution */
+  llmResponses?: LLMResult[]
 } = {}): AgentLoopDeps {
-  const { overrides = {}, player = makePlayer() } = opts
+  const { overrides = {}, player = makePlayer(), llmResponses } = opts
   const clock = createFakeClock(NOW_MS)
   const idGen = createFakeIdGenerator()
   const playerRepo = player
@@ -179,9 +184,11 @@ function makeDeps(opts: {
     : createFakePlayerRepository()
   const turnRepo = createFakeTurnExecutionRepository()
   const outboxRepo = createFakeOutboxRepository()
-  const llmProvider = createFakeLLMProvider([
+  const defaultResponses = [
+    makeSuccessLLM('1. 观察周围环境\n2. 探查可用资源\n3. 推进剧情'),
     makeSuccessLLM('你踏入青云山，感受到浓郁的灵气。'),
-  ])
+  ]
+  const llmProvider = createFakeLLMProvider(llmResponses ?? defaultResponses)
   const ragProvider = createFakeRAGProvider({ results: [] })
   const summaryProvider = createFakeSummaryProvider()
 
@@ -207,6 +214,7 @@ describe('Agent Loop — complexity estimation', () => {
       makeSuccessLLM('战斗开始！', [
         { id: 'call_1', name: 'Modify_Stats', arguments: { hp_change: -10 } },
       ]),
+      makeSuccessLLM('你成功抵挡了这次攻击，但受了些轻伤。'),
     ])
     const sink = createFakeEventSink()
     const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })
@@ -275,6 +283,7 @@ describe('Agent Loop — termination (implicit Done)', () => {
       makeSuccessLLM('你发现了一些灵石！', [
         { id: 'call_1', name: 'Backpack_additems', arguments: { items: [{ name: '灵石', count: 5, grade: '下品', type: '消耗品' }] } },
       ]),
+      makeSuccessLLM('灵石闪烁着淡淡的光芒，散发着精纯的灵气。'),
     ])
     const sink = createFakeEventSink()
     const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })
@@ -344,6 +353,7 @@ describe('Agent Loop — tool execution via rule engine', () => {
       makeSuccessLLM('妖兽的利爪划破了你的手臂！', [
         { id: 'call_1', name: 'Modify_Stats', arguments: { hp_change: -30, karma_change: 1 } },
       ]),
+      makeSuccessLLM('鲜血渗出，但你知道这只是修行路上的一次历练。'),
     ])
     const sink = createFakeEventSink()
     const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })
@@ -360,6 +370,7 @@ describe('Agent Loop — tool execution via rule engine', () => {
       makeSuccessLLM('你捡到了一把剑。', [
         { id: 'call_1', name: 'Backpack_additems', arguments: { items: [{ name: '青釭剑', count: 1, grade: '地阶上品', type: '法宝' }] } },
       ]),
+      makeSuccessLLM('青釭剑入手沉甸甸的，剑身隐隐流转着寒芒。'),
     ])
     const sink = createFakeEventSink()
     const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })
@@ -376,6 +387,7 @@ describe('Agent Loop — tool execution via rule engine', () => {
       makeSuccessLLM('你离开了青云山。', [
         { id: 'call_1', name: 'Change_Location', arguments: { location: '黑木林' } },
       ]),
+      makeSuccessLLM('黑木林中阴森幽暗，古木参天，偶尔传来不知名的兽吼声。'),
     ])
     const sink = createFakeEventSink()
     const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })
@@ -390,6 +402,7 @@ describe('Agent Loop — tool execution via rule engine', () => {
       makeSuccessLLM('值得记录的一天。', [
         { id: 'call_1', name: 'Write_Journal', arguments: { title: '探索青云', content: '在青云山发现了灵石矿脉。' } },
       ]),
+      makeSuccessLLM('你将这段经历记入修仙日志，作为日后参悟的凭据。'),
     ])
     const sink = createFakeEventSink()
     const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })
@@ -404,6 +417,7 @@ describe('Agent Loop — tool execution via rule engine', () => {
       makeSuccessLLM('青云掌门对你刮目相看。', [
         { id: 'call_1', name: 'Update_Relationship', arguments: { npc_name: '青云掌门', change: 15 } },
       ]),
+      makeSuccessLLM('掌门微微颔首，眼中闪过一丝赞许之色。'),
     ])
     const sink = createFakeEventSink()
     const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })
@@ -420,6 +434,7 @@ describe('Agent Loop — tool execution via rule engine', () => {
         { id: 'call_2', name: 'Backpack_additems', arguments: { items: [{ name: '妖兽内丹', count: 1, grade: '玄阶中品', type: '材料' }] } },
         { id: 'call_3', name: 'Write_Journal', arguments: { title: '击败妖兽', content: '首次击败练气期妖兽。' } },
       ]),
+      makeSuccessLLM('虽然受了些伤，但这枚妖兽内丹对提升修为大有裨益。'),
     ])
     const sink = createFakeEventSink()
     const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })
@@ -448,20 +463,20 @@ describe('Agent Loop — validation errors', () => {
     expect(sink.errorCode).toBe('TOOL_VALIDATION_ERROR')
   })
 
-  it('fails for duplicate tool calls', async () => {
+  it('allows same tool called twice in one turn', async () => {
     const llm = createFakeLLMProvider([
       makeSuccessLLM(null, [
         { id: 'call_1', name: 'Modify_Stats', arguments: { hp_change: -10 } },
         { id: 'call_2', name: 'Modify_Stats', arguments: { mp_change: -5 } },
       ]),
+      makeSuccessLLM('你受到了一些伤害，灵力也有所消耗。'),
     ])
     const sink = createFakeEventSink()
     const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })
 
     await agentLoop(deps, makeRequest())
 
-    expect(sink.failed).toBe(true)
-    expect(sink.errorCode).toBe('TOOL_VALIDATION_ERROR')
+    expect(sink.failed).toBe(false)
   })
 
   it('fails for contradictory tool calls (add+reduce same item)', async () => {
@@ -766,6 +781,7 @@ describe('Agent Loop — event sequence', () => {
       makeSuccessLLM('探索完成。', [
         { id: 'call_1', name: 'Modify_Stats', arguments: { reputation_change: 5 } },
       ]),
+      makeSuccessLLM('你的名声在青云门中渐渐传开，不少弟子对你投来钦佩的目光。'),
     ])
     const sink = createFakeEventSink()
     const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })
@@ -818,7 +834,7 @@ describe('Agent Loop — event sequence', () => {
 
 describe('Agent Loop — system prompt', () => {
   it('includes player state in system prompt', async () => {
-    let capturedMessages: Array<{ role: string; content: string }> = []
+    let capturedMessages: Array<{ role: string; content: string | null }> = []
     const llm: LLMProvider = {
       async complete(_config, request) {
         capturedMessages = request.messages
@@ -859,7 +875,7 @@ describe('Agent Loop — system prompt', () => {
   })
 
   it('includes inventory in system prompt when items exist', async () => {
-    let capturedMessages: Array<{ role: string; content: string }> = []
+    let capturedMessages: Array<{ role: string; content: string | null }> = []
     const llm: LLMProvider = {
       async complete(_config, request) {
         capturedMessages = request.messages
@@ -881,7 +897,7 @@ describe('Agent Loop — system prompt', () => {
   })
 
   it('shows empty inventory message when no items', async () => {
-    let capturedMessages: Array<{ role: string; content: string }> = []
+    let capturedMessages: Array<{ role: string; content: string | null }> = []
     const llm: LLMProvider = {
       async complete(_config, request) {
         capturedMessages = request.messages
@@ -909,11 +925,11 @@ describe('Agent Loop — system prompt', () => {
     // Then finally text
     responses.push(makeSuccessLLM('战斗终于结束了。'))
 
-    let capturedSystemPrompts: string[] = []
+    let capturedSystemPrompts: Array<string | null> = []
     const llm: LLMProvider = {
       async complete(_config, request) {
         const sysMsg = request.messages.find(m => m.role === 'system')
-        if (sysMsg) capturedSystemPrompts.push(sysMsg.content)
+        if (sysMsg?.content) capturedSystemPrompts.push(sysMsg.content)
         return responses.shift() ?? { ok: false, error: { code: 'LLM_SERVER_ERROR', message: 'No more', retryable: false } }
       },
     }
@@ -923,7 +939,7 @@ describe('Agent Loop — system prompt', () => {
     await agentLoop(deps, makeRequest({ input: '与妖兽展开激烈战斗', idempotencyKey: 'combat-test' }))
 
     // Check that at least one system prompt after iteration 15 contains the budget hint
-    const hintsAfterSoftLimit = capturedSystemPrompts.slice(15).filter(p => p.includes('收束'))
+    const hintsAfterSoftLimit = capturedSystemPrompts.slice(15).filter(p => p != null && p.includes('收束'))
     expect(hintsAfterSoftLimit.length).toBeGreaterThan(0)
   })
 })
@@ -934,6 +950,7 @@ describe('Agent Loop — dead player status', () => {
       makeSuccessLLM('致命一击！', [
         { id: 'call_1', name: 'Modify_Stats', arguments: { hp_change: -150 } },
       ]),
+      makeSuccessLLM('天地暗淡，你的意识渐渐模糊……一代修士就此陨落。'),
     ])
     const sink = createFakeEventSink()
     const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink } })

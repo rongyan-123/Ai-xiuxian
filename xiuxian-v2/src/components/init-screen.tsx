@@ -31,13 +31,29 @@ export function InitScreen() {
         alignment: '中立',
         sect: '散修',
         spiritual_root: '五行杂灵根',
-        
         mental_state: '心如止水',
-        reputation: 0
+        reputation: 0,
+        emotion: '平静',
+        state_of_mind: 80,
+        fortune: 50,
+        karma: 0,
+        techniques: { main: '基础吐纳', combat: [], movement: '步行', support: [] },
+        shield: { current: 0, max: 50 },
+        talents: [],
+        traits: [],
       },
       inventory: [],
-      relationships: {}
-    } as any)
+      codex: [],
+      relationships: {},
+      situations: [],
+      foreshadowings: [],
+      worldTime: Date.now(),
+      currentLocation: '新手村',
+      npcs: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      version: 0,
+    })
     setPhase('SELECT')
   }
 

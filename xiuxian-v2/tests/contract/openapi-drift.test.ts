@@ -348,5 +348,8 @@ function makeValidPlayerSnapshot() {
       },
     ],
     relationships: { 'npc-1': 50 },
+    worldTime: 1700000000000,
+    currentLocation: '新手村',
+    npcs: [],
   }
 }

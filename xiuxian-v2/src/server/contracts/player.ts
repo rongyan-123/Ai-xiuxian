@@ -79,6 +79,25 @@ export const CodexEntrySchema = z.object({
 
 export type CodexEntry = z.infer<typeof CodexEntrySchema>
 
+// ── T1 NPC ─────────────────────────────────────────────────────────────
+
+export const T1NpcSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  title: z.string().optional(),
+  realm: z.string(),
+  currentLocation: z.string(),
+  alignment: z.string(),
+  sect: z.string(),
+  personality: z.string(),
+  relationship: z.number(),
+  dialogueTemplates: z.record(z.string(), z.array(z.string())),
+  description: z.string(),
+  createdAt: z.number(),
+})
+
+export type T1Npc = z.infer<typeof T1NpcSchema>
+
 // ── Player Snapshot ────────────────────────────────────────────────────
 
 export const PlayerSnapshotSchema = z.object({
@@ -90,6 +109,9 @@ export const PlayerSnapshotSchema = z.object({
   inventory: z.array(InventoryItemSchema),
   codex: z.array(CodexEntrySchema),
   relationships: z.record(z.string(), z.number()),
+  worldTime: z.number(),
+  currentLocation: z.string(),
+  npcs: z.array(T1NpcSchema),
 })
 
 export type PlayerSnapshot = z.infer<typeof PlayerSnapshotSchema>

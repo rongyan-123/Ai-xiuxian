@@ -82,7 +82,9 @@ export function createLLMAdapter(deps: LLMAdapterDeps): LLMProvider {
             clearTimeout(timeoutId)
 
             if (!response.ok) {
-              const error = classifyHttpError(response.status, response.statusText)
+              let errorBody = ''
+              try { errorBody = await response.text() } catch { /* ignore */ }
+              const error = classifyHttpError(response.status, response.statusText, errorBody)
               lastError = error
 
               const retryDecision = retryPolicy.shouldRetry(error, attempt)
@@ -143,20 +145,21 @@ export function createLLMAdapter(deps: LLMAdapterDeps): LLMProvider {
 
 // ── Error Classification ───────────────────────────────────────────────
 
-function classifyHttpError(status: number, statusText: string): LLMError {
+function classifyHttpError(status: number, statusText: string, body?: string): LLMError {
+  const detail = body ? ` — ${body.slice(0, 500)}` : ''
   switch (status) {
     case 401:
     case 403:
       return {
         code: 'LLM_AUTHENTICATION',
-        message: `Authentication failed: ${statusText}`,
+        message: `Authentication failed: ${statusText}${detail}`,
         retryable: false,
         statusCode: status,
       }
     case 429:
       return {
         code: 'LLM_RATE_LIMITED',
-        message: `Rate limited: ${statusText}`,
+        message: `Rate limited: ${statusText}${detail}`,
         retryable: true,
         statusCode: status,
       }
@@ -164,14 +167,14 @@ function classifyHttpError(status: number, statusText: string): LLMError {
       if (status >= 500) {
         return {
           code: 'LLM_SERVER_ERROR',
-          message: `Server error ${status}: ${statusText}`,
+          message: `Server error ${status}: ${statusText}${detail}`,
           retryable: true,
           statusCode: status,
         }
       }
       return {
         code: 'LLM_SERVER_ERROR',
-        message: `Unexpected status ${status}: ${statusText}`,
+        message: `Unexpected status ${status}: ${statusText}${detail}`,
         retryable: false,
         statusCode: status,
       }

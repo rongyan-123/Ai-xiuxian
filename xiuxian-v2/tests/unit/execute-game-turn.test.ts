@@ -136,6 +136,9 @@ function makePlayer(overrides: Partial<PlayerSnapshot> = {}): PlayerSnapshot {
     relationships: {},
     situations: [],
     foreshadowings: [],
+    worldTime: NOW_MS,
+    currentLocation: '新手村',
+    npcs: [],
     createdAt: NOW_MS,
     updatedAt: NOW_MS,
     ...overrides,
@@ -146,7 +149,7 @@ function makeRequest(overrides: Partial<GameTurnRequest> = {}): GameTurnRequest 
   return {
     playerId: 'player-1',
     playerName: '测试修士',
-    input: '探索青云山',
+    input: '探索',
     mode: 'action',
     idempotencyKey: 'idem-001',
     llmConfig: {
@@ -165,8 +168,9 @@ function makeRequest(overrides: Partial<GameTurnRequest> = {}): GameTurnRequest 
 function makeDeps(opts: {
   overrides?: Partial<ExecuteGameTurnDeps>
   player?: PlayerSnapshot | null
+  llmResponses?: LLMResult[]
 } = {}): ExecuteGameTurnDeps {
-  const { overrides = {}, player = makePlayer() } = opts
+  const { overrides = {}, player = makePlayer(), llmResponses } = opts
   const clock = createFakeClock(NOW_MS)
   const idGen = createFakeIdGenerator()
   const playerRepo = player
@@ -174,9 +178,11 @@ function makeDeps(opts: {
     : createFakePlayerRepository()
   const turnRepo = createFakeTurnExecutionRepository()
   const outboxRepo = createFakeOutboxRepository()
-  const llmProvider = createFakeLLMProvider([
+  const defaultResponses = [
+    makeSuccessLLM('1. 观察环境\n2. 推进剧情'),
     makeSuccessLLM('你踏入青云山，感受到浓郁的灵气。'),
-  ])
+  ]
+  const llmProvider = createFakeLLMProvider(llmResponses ?? defaultResponses)
   const ragProvider = createFakeRAGProvider({ results: [] })
   const summaryProvider = createFakeSummaryProvider()
   const eventSink = createFakeEventSink()
@@ -224,6 +230,7 @@ describe('8.1 ExecuteGameTurn', () => {
         makeSuccessLLM('妖兽出现了！', [
           { id: 'call_1', name: 'Modify_Stats', arguments: { hp_change: -30 } },
         ]),
+        makeSuccessLLM('妖兽的利爪划破了你的手臂，鲜血渗出。'),
       ])
       const deps = makeDeps({ overrides: { llmProvider: llm } })
 
@@ -388,6 +395,7 @@ describe('8.1 ExecuteGameTurn', () => {
         makeSuccessLLM('获得灵石', [
           { id: 'call_1', name: 'Backpack_additems', arguments: { items: [{ name: '灵石', count: 10, grade: '中品', type: '消耗品' }] } },
         ]),
+        makeSuccessLLM('灵石入手温润，散发着精纯的灵气。'),
       ])
       const deps = makeDeps({ overrides: { llmProvider: llm } })
 
