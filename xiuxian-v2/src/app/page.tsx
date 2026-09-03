@@ -4,7 +4,6 @@ import { GameSidebar } from "@/components/game-sidebar"
 import { ChatPanel } from "@/components/chat-panel"
 import { StatusPanel } from "@/components/status-panel"
 import { InitScreen } from "@/components/init-screen"
-import { SelectScreen } from "@/components/select-screen"
 import { SettingsPanel } from "@/components/settings-panel"
 import { BackpackPanel } from "@/components/backpack-panel"
 import { StatsDetailPanel } from "@/components/stats-panel"
@@ -34,13 +33,21 @@ export default function Home() {
       {/* === 桌面端：三栏布局 (md及以上) === */}
       <div className="hidden md:flex w-full h-full">
         <GameSidebar />
-        <div className="flex-1 flex-col relative overflow-hidden">
+        <div className="flex flex-1 flex-col relative overflow-hidden min-h-0">
           {currentView === "settings" && <SettingsPanel />}
           {currentView === "backpack" && <BackpackPanel />}
           {currentView === "journal" && <JournalPanel />}
           {currentView !== "settings" && currentView !== "backpack" && currentView !== "journal" && phase === "INIT" && <InitScreen />}
-          {phase === "SELECT" && <SelectScreen />}
-          {phase === "PLAYING" && currentView === "chat" && <ChatPanel />}
+          {/* 开局固定模板，直接进 PLAYING（SelectScreen 已停用） */}
+          {/* ChatPanel始终挂载，CSS隐藏代替卸载，避免切换面板中断SSE流 */}
+          {phase === "PLAYING" && (
+            <div
+              style={{ display: currentView === "chat" ? "flex" : "none" }}
+              className="flex-1 flex-col relative overflow-hidden min-h-0"
+            >
+              <ChatPanel />
+            </div>
+          )}
           {phase === "PLAYING" && currentView === "stats" && <StatsDetailPanel />}
           {phase === "PLAYING" && currentView === "codex" && <CodexPanel />}
           {phase === "DEAD" && <div className="flex items-center justify-center h-full text-red-500 text-2xl font-chinese">小元已尽</div>}
@@ -52,8 +59,12 @@ export default function Home() {
       <div className="md:hidden flex flex-col w-full h-full">
         <div className="flex-1 overflow-y-auto">
           {currentView === "chat" && phase === "INIT" && <InitScreen />}
-          {phase === "SELECT" && <SelectScreen />}
-          {phase === "PLAYING" && currentView === "chat" && <ChatPanel />}
+          {/* 移动端ChatPanel同样保持挂载（CSS隐藏），避免sheet打开时断流 */}
+          {phase === "PLAYING" && (
+            <div style={{ display: currentView === "chat" ? "flex" : "none" }} className="flex flex-col h-full">
+              <ChatPanel />
+            </div>
+          )}
           {phase === "DEAD" && <div className="flex items-center justify-center h-full text-red-500 text-xl font-chinese">小元已尽</div>}
         </div>
 

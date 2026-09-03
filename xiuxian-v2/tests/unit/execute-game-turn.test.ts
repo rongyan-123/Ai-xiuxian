@@ -132,7 +132,17 @@ function makePlayer(overrides: Partial<PlayerSnapshot> = {}): PlayerSnapshot {
       traits: [],
     },
     inventory: [],
-    codex: [],
+    // 固件代表既有世界：已有 location 条目 → 不触发 Genesis（Genesis 有独立测试）
+    codex: [
+      {
+        id: 'codex-village',
+        name: '青牛村',
+        entry_type: 'location',
+        description: '南域一座宁静的山村。',
+        metadata: { region: '南域·百越', danger_level: '安全' },
+        timestamp: NOW_MS,
+      },
+    ],
     relationships: {},
     situations: [],
     foreshadowings: [],

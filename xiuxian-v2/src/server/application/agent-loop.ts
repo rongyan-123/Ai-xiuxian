@@ -30,6 +30,16 @@ import type {
 import type { T1Npc } from '@/types'
 import { processRuleEngine } from '../domain/rule-engine'
 import type { RuleEngineDeps } from '../domain/rule-engine'
+import {
+  buildWorldGenesisPrompt,
+  buildGenesisCompletionPrompt,
+  needsWorldGenesis,
+  needsGenesisCompletion,
+  pickStartLocation,
+  buildFallbackWorld,
+  buildFallbackBackground,
+  GENESIS_TOOLS,
+} from '../domain/world-gen'
 import { validateToolCalls, validateSingleToolCall } from '../domain/tool-schemas'
 import { commitGameTurn, rollbackGameTurn } from '../infrastructure/transaction'
 import {
@@ -43,7 +53,8 @@ import { buildWorldOverview } from '../domain/entity-selector'
 import type { GameLogger } from '../observability/game-logger'
 import { compressMessages, estimateTokens } from './context-compression'
 import { getRegionState } from '../domain/region-state'
-import { formatRegionContextForGm } from '../domain/region-dm'
+import { formatRegionContextForGm, getRegionRules } from '../domain/region-dm'
+import { tickRegionNpcs } from '../domain/npc-tick'
 import { TOOL_GATE_CHECKS } from '../domain/gate-checks'
 import type { GateCheckContext } from '../domain/gate-checks'
 import { getActiveNpcsAtLocation, formatNpcPresence } from '../domain/npc-activity'
@@ -387,9 +398,19 @@ function buildSystemPrompt(
 【叙事之道】
 - 我会先探查再描述：描述具体的发现物（物品、生物、NPC、事件）之前，先调用对应的探查工具获取真实信息。描述移动过程、环境气氛、角色感受则不需要工具
 - 我会让世界自行运转：NPC按自己的目标和性格行动，而非只在对玩家做出反应时才出现；环境随时间和事件自然变化；当叙述中需要时，生成新的NPC或事件来丰富世界
-- 我只叙述工具返回的真实内容，不凭空添加工具应提供的信息
+- 工具结果是你的感知来源，不是叙述对象：探查周边无危险 → "四周安宁，鸟鸣山幽"；探查到妖兽 → "前方密林深处隐约传来低沉的兽吼"。永不提及"工具""探查""返回值""生成"等机制词汇，所有感知都以角色能察觉的现象呈现
+- 场景上下文（在场人物、前情提要、活跃事件）是内部参考，以自然叙事融入：村口老槐树下，一个灰袍老道正闭目养神——而非"已落根""已存在""已生成"等元叙述
 - 我保持世界的一致性：上文提到的人物、地点、事件在后续叙事中必须延续。前情提要和在场人物是叙事的锚点，不是装饰
+- 世界中的地点是既有之物：图鉴已收录或叙事中已出现过的地点直接引用即可，无需调用GenerateLocation重新生成
 - 我以文学化的修仙笔法叙述，让这个世界在文字中活过来
+
+【逻辑铁律】
+- 因果闭环：凡事有前因后果。村口老头不会无故送你秘籍，妖兽不会无故袭击路人。巧合必须有合理解释
+- 人物一致：NPC按自身性格、立场、利益行事。贪婪的店主不会无偿赠药，正派修士不会无故欺凌弱小
+- 设定自洽：已建立的规则前后不变。若苍澜山在南域之北，则不会突然出现在东域
+- 代价逻辑：行为皆有代价。修炼需资源，受伤需疗养，得罪人需承担后果。无零成本变强，无无代价犯错
+- 世界运转：NPC不因玩家在场才存在。村中炊烟照样升起，坊市交易照样进行，不管玩家看不看得到
+- 叙事优先：将以上所有规则内化为叙事本能，而非逐条检查清单。好的故事本身就符合逻辑
 
 【玩家当前状态】
 ${stateBlock}
@@ -412,6 +433,205 @@ function buildToolDefinitions(): Array<{
     parameters: t.input_schema,
   }))
   return defs
+}
+
+// ── World Genesis ─────────────────────────────────────────────────────────
+//
+// 新存档首次 action 时生成世界初始状态：固定底层规则模板 + LLM 填充具体内容
+// （地点/宗门/NPC/玩家背景 → codex）。不产生玩家可见文本。
+// LLM 失败或产出无效 → 降级到固定模板世界（buildFallbackWorld），保证世界永不空洞。
+
+async function runWorldGenesis(
+  deps: Pick<AgentLoopDeps, 'llmProvider' | 'clock' | 'idGen'>,
+  request: GameTurnRequest,
+  player: PlayerSnapshot,
+  requestId: string,
+  runId: string,
+  emit: (type: string, payload: Record<string, unknown>) => void,
+): Promise<void> {
+  const { llmProvider, clock, idGen } = deps
+
+  const fallback = (reason: string) => {
+    emit('step', { label: `[创世] ${reason}，使用固定模板世界` })
+    const world = buildFallbackWorld({
+      name: player.name,
+      gender: player.gender,
+      realm: player.stats.realm,
+    })
+    player.codex = world.codex as unknown as PlayerSnapshot['codex']
+    player.currentLocation = world.currentLocation
+    agentLogger.log({
+      timestamp: clock.iso(),
+      event: 'world.genesis_fallback',
+      level: 'warn',
+      requestId,
+      runId,
+      playerId: request.playerId,
+      reason,
+    })
+  }
+
+  emit('step', { label: '[创世] 检测到新世界，正在推演大陆格局...' })
+
+  const genesisPrompt = buildWorldGenesisPrompt({
+    name: player.name,
+    gender: player.gender,
+    realm: player.stats.realm,
+  })
+  const genesisTools = buildToolDefinitions().filter((td) =>
+    (GENESIS_TOOLS as readonly string[]).includes(td.name),
+  )
+
+  const genesisResult = await llmProvider.complete(request.llmConfig, {
+    messages: [
+      { role: 'system', content: genesisPrompt },
+      {
+        role: 'user',
+        content: `请为玩家"${player.name}"生成这个世界的初始状态。只调用工具，不输出文本。`,
+      },
+    ],
+    tools: genesisTools,
+    signal: request.signal,
+    timeoutMs: 60000,
+  })
+
+  if (!genesisResult.ok) {
+    fallback(`世界生成失败（${genesisResult.error.code}）`)
+    return
+  }
+
+  const toolCalls = genesisResult.response.toolCalls
+  if (toolCalls.length === 0) {
+    fallback('世界生成未产出内容')
+    return
+  }
+
+  // 创世不重试：跳过格式无效的工具调用，剩余的有效调用照常执行
+  const validCalls = toolCalls.filter((tc) => validateSingleToolCall(tc.name, tc.arguments).valid)
+  if (validCalls.length === 0) {
+    fallback('世界生成工具调用全部无效')
+    return
+  }
+
+  const codexLenBefore = player.codex.length
+  const ruleDeps: RuleEngineDeps = { now: () => clock.now(), random: () => idGen.uuid() }
+  let engineResult = processRuleEngine(
+    validCalls.map((tc) => ({ name: tc.name, args: tc.arguments })),
+    player.stats,
+    player.inventory,
+    player.codex,
+    player.relationships,
+    player.situations,
+    player.foreshadowings,
+    ruleDeps,
+    player.worldTime ?? Date.now(),
+    player.currentLocation,
+    player.npcs ?? [],
+  )
+
+  const startLocation = pickStartLocation(engineResult.codex)
+  if (!startLocation) {
+    fallback('世界生成未包含出生地点')
+    return
+  }
+
+  // ── 补全轮：LLM 单次调用往往只出地点，缺失宗门/人物/背景时再调一轮 ──
+  if (needsGenesisCompletion(engineResult.codex, engineResult.npcs) && !request.signal?.aborted) {
+    const completionPrompt = buildGenesisCompletionPrompt(
+      { name: player.name, gender: player.gender, realm: player.stats.realm },
+      engineResult.codex as Array<{ name: string; entry_type: string }>,
+      engineResult.npcs,
+    )
+    const completionTools = buildToolDefinitions().filter((td) =>
+      (GENESIS_TOOLS as readonly string[]).includes(td.name),
+    )
+    const completionResult = await llmProvider.complete(request.llmConfig, {
+      messages: [
+        { role: 'system', content: completionPrompt },
+        {
+          role: 'user',
+          content: `请补齐世界缺失内容。只调用工具，不输出文本。`,
+        },
+      ],
+      tools: completionTools,
+      signal: request.signal,
+      timeoutMs: 60000,
+    })
+    if (completionResult.ok) {
+      const completionCalls = (completionResult.response.toolCalls ?? []).filter((tc) =>
+        validateSingleToolCall(tc.name, tc.arguments).valid,
+      )
+      if (completionCalls.length > 0) {
+        const merged = processRuleEngine(
+          completionCalls.map((tc) => ({ name: tc.name, args: tc.arguments })),
+          player.stats,
+          player.inventory,
+          engineResult.codex,
+          engineResult.relationships,
+          engineResult.situations,
+          engineResult.foreshadowings,
+          ruleDeps,
+          engineResult.worldTime,
+          startLocation,
+          engineResult.npcs,
+        )
+        engineResult = merged
+        emit('step', { label: `[创世] 世界骨架补全 — 宗门${merged.codex.filter((e) => e.entry_type === 'sect').length} / 人物${merged.npcs.length} / 背景${merged.codex.some((e) => e.entry_type === 'background') ? '✓' : '✗'}` })
+      }
+    }
+  }
+
+  // 背景兜底：背景缺失或 name 含乱码（LLM 偶发输出损坏字节）时用固定模板背景
+  const fallbackBackground = () => buildFallbackBackground({
+    name: player.name,
+    gender: player.gender,
+    realm: player.stats.realm,
+  })
+  const badBgIdx = engineResult.codex.findIndex(
+    (e) => e.entry_type === 'background' && (e.name.includes('�') || e.name.trim() === ''),
+  )
+  if (badBgIdx >= 0) {
+    engineResult.codex[badBgIdx] = fallbackBackground()
+  } else if (!engineResult.codex.some((e) => e.entry_type === 'background')) {
+    engineResult.codex.push(fallbackBackground())
+  }
+
+  player.codex = engineResult.codex as unknown as PlayerSnapshot['codex']
+  player.situations = engineResult.situations as unknown as PlayerSnapshot['situations']
+  player.foreshadowings = engineResult.foreshadowings as unknown as PlayerSnapshot['foreshadowings']
+  player.worldTime = engineResult.worldTime
+  player.currentLocation = startLocation
+  player.npcs = engineResult.npcs as unknown as PlayerSnapshot['npcs']
+
+  // 下发 codex 事件（前端图鉴同步）
+  const newEntries = engineResult.codex.slice(codexLenBefore)
+  for (const entry of newEntries) {
+    emit('codex', {
+      name: entry.name,
+      entry_type: entry.entry_type,
+      description: entry.description,
+      timestamp: clock.now(),
+    })
+  }
+
+  const locationCount = engineResult.codex.filter((e) => e.entry_type === 'location').length
+  const sectCount = engineResult.codex.filter((e) => e.entry_type === 'sect').length
+  emit('step', {
+    label: `[创世] 世界推演完成 — 地点${locationCount} / 宗门${sectCount} / 人物${engineResult.npcs.length}，你在${startLocation}醒来`,
+  })
+
+  agentLogger.log({
+    timestamp: clock.iso(),
+    event: 'world.genesis_complete',
+    level: 'info',
+    requestId,
+    runId,
+    playerId: request.playerId,
+    location_count: locationCount,
+    sect_count: sectCount,
+    npc_count: engineResult.npcs.length,
+    start_location: startLocation,
+  })
 }
 
 // ── Main Entry Point ──────────────────────────────────────────────────────
@@ -521,6 +741,11 @@ export async function agentLoop(
     runId,
     playerId: request.playerId,
   })
+
+  // ── Step 3.5: World Genesis（新存档首次 action 生成世界）───────────────
+  if (needsWorldGenesis(player.codex) && !request.signal?.aborted) {
+    await runWorldGenesis({ llmProvider, clock, idGen }, request, player, requestId, runId, emit)
+  }
 
   // ── Step 4: RAG context (degradation-tolerant) ───────────────────────
   let ragContext = ''
@@ -1208,6 +1433,31 @@ export async function agentLoop(
     })
     eventSink.complete()
     return
+  }
+
+  // ── NPC Tick: 同区域NPC推进 ───────────────────────────────────────────
+  const npcsActive = getActiveNpcsAtLocation(
+    (updatedPlayer.npcs ?? []) as unknown as T1Npc[],
+    updatedPlayer.currentLocation,
+    updatedPlayer.worldTime as number,
+  )
+  const npcsAtLocation = npcsActive.map((s) => s.npc)
+
+  if (npcsAtLocation.length > 0) {
+    emit('step', { label: 'NPC反应中...' })
+    const regionRules = getRegionRules(updatedPlayer.currentLocation)
+    const allNpcs = (updatedPlayer.npcs ?? []) as unknown as T1Npc[]
+
+    const tickedNpcs = await tickRegionNpcs(
+      npcsAtLocation,
+      allNpcs,
+      updatedPlayer.worldTime as number,
+      0,
+      regionRules,
+    )
+
+    const tickedMap = new Map(tickedNpcs.map((n) => [n.id, n] as const))
+    updatedPlayer.npcs = allNpcs.map((n) => tickedMap.get(n.id) ?? n) as unknown as PlayerSnapshot['npcs']
   }
 
   // ── Step 12: Emit final events ───────────────────────────────────────

@@ -179,6 +179,7 @@ export function createNpcFromSeed(seed: SeedNpc): T1Npc {
     overrides: seed.traits,
   })
   npc.traits = { ...archetypeParams }
+  npc.archetype = seed.archetype
 
   return npc
 }

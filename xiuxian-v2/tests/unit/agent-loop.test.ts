@@ -141,7 +141,17 @@ function makePlayer(overrides: Partial<PlayerSnapshot> = {}): PlayerSnapshot {
       traits: [],
     },
     inventory: [],
-    codex: [],
+    // 固件代表既有世界：已有 location 条目 → 不触发 Genesis（Genesis 有独立测试）
+    codex: [
+      {
+        id: 'codex-village',
+        name: '青牛村',
+        entry_type: 'location',
+        description: '南域一座宁静的山村。',
+        metadata: { region: '南域·百越', danger_level: '安全' },
+        timestamp: NOW_MS,
+      },
+    ],
     relationships: {},
     situations: [],
     foreshadowings: [],
@@ -998,5 +1008,263 @@ describe('Agent Loop — dead player status', () => {
     const stateUpdate = sink.events.find(e => e.type === 'state_update')
     const player = stateUpdate!.payload.player as PlayerSnapshot
     expect(player.status).toBe('DEAD')
+  })
+})
+
+describe('Agent Loop — World Genesis', () => {
+  /** 可区分创世调用与主循环调用的 mock：创世 system prompt 含"创世者" */
+  function makeGenesisAwareLLM(): LLMProvider {
+    return {
+      async complete(_config, request) {
+        const systemMsg = request.messages[0]?.content ?? ''
+        if (systemMsg.includes('创世者')) {
+          return makeSuccessLLM(null, [
+            {
+              id: 'gen-1',
+              name: 'GenerateLocation',
+              arguments: {
+                locations: [{
+                  name: '青牛村',
+                  region: '南域·百越',
+                  danger_level: '安全',
+                  description: '南域·百越一座宁静的山村，村口老槐树下常有老人下棋。',
+                  peace_orno: '和平',
+                  inhabitants: ['李老伯'],
+                }],
+              },
+            },
+            {
+              id: 'gen-2',
+              name: 'GenerateSect',
+              arguments: {
+                sects: [{
+                  name: '上清宗',
+                  alignment: '正道',
+                  power_level: '一流',
+                  master: '玄真道人',
+                  master_realm: '元婴期',
+                  description: '南域灵脉名山上清峰上的正道大派。',
+                }],
+              },
+            },
+            {
+              id: 'gen-3',
+              name: 'AddCodexEntry',
+              arguments: {
+                name: '测试修士',
+                entry_type: 'background',
+                description: '出身青牛村的散修，幼时偶得残缺吐纳法门，自此踏上修仙之路。',
+              },
+            },
+          ])
+        }
+        return makeSuccessLLM('你在青牛村醒来，晨光透过窗纸。')
+      },
+    }
+  }
+
+  it('codex 无 location 时触发创世：生成地点/宗门/背景并落库', async () => {
+    const player = makePlayer({ codex: [] })
+    const llm = makeGenesisAwareLLM()
+    const sink = createFakeEventSink()
+    const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink }, player })
+
+    await agentLoop(deps, makeRequest())
+
+    expect(sink.completed).toBe(true)
+
+    // 创世事件：codex × 3 + 创世 step
+    const codexEvents = sink.events.filter((e) => e.type === 'codex')
+    expect(codexEvents.length).toBe(3)
+    expect(codexEvents.some((e) => e.payload.entry_type === 'location')).toBe(true)
+    expect(codexEvents.some((e) => e.payload.entry_type === 'sect')).toBe(true)
+    expect(codexEvents.some((e) => e.payload.entry_type === 'background')).toBe(true)
+    const genesisStep = sink.events.find((e) => e.type === 'step' && String(e.payload.label).includes('世界推演完成'))
+    expect(genesisStep).toBeDefined()
+
+    // 保存后的玩家：currentLocation = 出生村，codex 含 location/sect/background
+    const stateUpdate = sink.events.find((e) => e.type === 'state_update')
+    const saved = stateUpdate!.payload.player as PlayerSnapshot
+    expect(saved.currentLocation).toBe('青牛村')
+    expect(saved.codex.some((c) => c.entry_type === 'location')).toBe(true)
+    expect(saved.codex.some((c) => c.entry_type === 'sect')).toBe(true)
+    expect(saved.codex.some((c) => c.entry_type === 'background')).toBe(true)
+  })
+
+  it('创世失败（LLM 错误）时降级固定模板世界，回合仍正常完成', async () => {
+    const player = makePlayer({ codex: [] })
+    const llm: LLMProvider = {
+      async complete(_config, request) {
+        const systemMsg = request.messages[0]?.content ?? ''
+        if (systemMsg.includes('创世者')) {
+          return { ok: false, error: { code: 'LLM_SERVER_ERROR', message: 'boom', retryable: true } }
+        }
+        return makeSuccessLLM('你行走在青牛村的田间小路上。')
+      },
+    }
+    const sink = createFakeEventSink()
+    const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink }, player })
+
+    await agentLoop(deps, makeRequest())
+
+    expect(sink.completed).toBe(true)
+    expect(sink.failed).toBe(false)
+
+    const fallbackStep = sink.events.find((e) => e.type === 'step' && String(e.payload.label).includes('固定模板世界'))
+    expect(fallbackStep).toBeDefined()
+
+    const stateUpdate = sink.events.find((e) => e.type === 'state_update')
+    const saved = stateUpdate!.payload.player as PlayerSnapshot
+    expect(saved.currentLocation).toBe('青牛村')
+    expect(saved.codex.some((c) => c.entry_type === 'location')).toBe(true)
+    expect(saved.codex.some((c) => c.entry_type === 'background')).toBe(true)
+  })
+
+  it('创世产出无地点时降级固定模板世界', async () => {
+    const player = makePlayer({ codex: [] })
+    const llm: LLMProvider = {
+      async complete(_config, request) {
+        const systemMsg = request.messages[0]?.content ?? ''
+        if (systemMsg.includes('创世者')) {
+          return makeSuccessLLM(null, [
+            { id: 'gen-1', name: 'GenerateSect', arguments: { sects: [{ name: '魔渊', alignment: '魔道', power_level: '三流', master: '无', master_realm: '金丹期', description: '隐于深谷。' }] } },
+          ])
+        }
+        return makeSuccessLLM('你在青牛村醒来。')
+      },
+    }
+    const sink = createFakeEventSink()
+    const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink }, player })
+
+    await agentLoop(deps, makeRequest())
+
+    expect(sink.completed).toBe(true)
+    const stateUpdate = sink.events.find((e) => e.type === 'state_update')
+    const saved = stateUpdate!.payload.player as PlayerSnapshot
+    expect(saved.currentLocation).toBe('青牛村')
+    expect(saved.codex.some((c) => c.entry_type === 'location')).toBe(true)
+  })
+
+  it('创世第一轮只出地点时，补全轮补齐宗门/背景并落库', async () => {
+    const player = makePlayer({ codex: [] })
+    const llm: LLMProvider = {
+      async complete(_config, request) {
+        const systemMsg = request.messages[0]?.content ?? ''
+        if (systemMsg.includes('缺失内容')) {
+          // 补全轮：只允许缺失类型工具，补齐宗门 + 背景
+          return makeSuccessLLM(null, [
+            {
+              id: 'gen-2',
+              name: 'GenerateSect',
+              arguments: {
+                sects: [{
+                  name: '上清宗',
+                  alignment: '正道',
+                  power_level: '一流',
+                  master: '玄真道人',
+                  master_realm: '元婴期',
+                  description: '南域灵脉名山上的正道大派。',
+                }],
+              },
+            },
+            {
+              id: 'gen-3',
+              name: 'AddCodexEntry',
+              arguments: {
+                name: '测试修士',
+                entry_type: 'background',
+                description: '出身青牛村的散修，幼时偶得残缺吐纳法门。',
+              },
+            },
+          ])
+        }
+        if (systemMsg.includes('创世者')) {
+          // 第一轮：只生成地点（模拟 LLM 单次调用输出不全）
+          return makeSuccessLLM(null, [
+            {
+              id: 'gen-1',
+              name: 'GenerateLocation',
+              arguments: {
+                locations: [{
+                  name: '青牛村',
+                  region: '南域·百越',
+                  danger_level: '安全',
+                  description: '南域·百越一座宁静的山村。',
+                  peace_orno: '和平',
+                }],
+              },
+            },
+          ])
+        }
+        return makeSuccessLLM('你在青牛村醒来。')
+      },
+    }
+    const sink = createFakeEventSink()
+    const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink }, player })
+
+    await agentLoop(deps, makeRequest())
+
+    expect(sink.completed).toBe(true)
+    expect(sink.failed).toBe(false)
+
+    // 补全后：location + sect + background 全部落库
+    const stateUpdate = sink.events.find((e) => e.type === 'state_update')
+    const saved = stateUpdate!.payload.player as PlayerSnapshot
+    expect(saved.currentLocation).toBe('青牛村')
+    expect(saved.codex.some((c) => c.entry_type === 'location')).toBe(true)
+    expect(saved.codex.some((c) => c.entry_type === 'sect')).toBe(true)
+    expect(saved.codex.some((c) => c.entry_type === 'background')).toBe(true)
+  })
+
+  it('创世背景 name 含乱码字符时替换为固定模板背景', async () => {
+    const player = makePlayer({ codex: [] })
+    const llm: LLMProvider = {
+      async complete(_config, request) {
+        const systemMsg = request.messages[0]?.content ?? ''
+        if (systemMsg.includes('缺失内容')) {
+          return makeSuccessLLM(null, [
+            {
+              id: 'gen-2',
+              name: 'AddCodexEntry',
+              arguments: {
+                name: '���',
+                entry_type: 'background',
+                description: '出身青牛村的散修。',
+              },
+            },
+          ])
+        }
+        if (systemMsg.includes('创世者')) {
+          return makeSuccessLLM(null, [
+            {
+              id: 'gen-1',
+              name: 'GenerateLocation',
+              arguments: {
+                locations: [{
+                  name: '青牛村',
+                  region: '南域·百越',
+                  danger_level: '安全',
+                  description: '南域·百越一座宁静的山村。',
+                  peace_orno: '和平',
+                }],
+              },
+            },
+          ])
+        }
+        return makeSuccessLLM('你在青牛村醒来。')
+      },
+    }
+    const sink = createFakeEventSink()
+    const deps = makeDeps({ overrides: { llmProvider: llm, eventSink: sink }, player })
+
+    await agentLoop(deps, makeRequest())
+
+    expect(sink.completed).toBe(true)
+    const stateUpdate = sink.events.find((e) => e.type === 'state_update')
+    const saved = stateUpdate!.payload.player as PlayerSnapshot
+    const bg = saved.codex.find((c) => c.entry_type === 'background')
+    expect(bg).toBeDefined()
+    expect(bg!.name).toBe('测试修士')
+    expect(bg!.name).not.toContain('�')
   })
 })

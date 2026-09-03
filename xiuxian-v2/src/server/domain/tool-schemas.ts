@@ -82,7 +82,7 @@ const SituationAction = z.enum(['create', 'update_status', 'end', 'add_outcome']
 
 const BreakthroughResult = z.enum(['SUCCESS', 'FAIL'])
 
-const CodexEntryType = z.enum(['npc', 'location', 'item', 'sect'])
+const CodexEntryType = z.enum(['npc', 'location', 'item', 'sect', 'background'])
 
 const JournalEntryType = z.enum(['story_start', 'major_twist', 'story_end', 'general'])
 
@@ -258,18 +258,19 @@ const GenerateLocationArgs = z.preprocess(
     return obj
   },
   z.object({
+    // 必填仅为核心字段；LLM 生成的次要字段可能缺失，rule-engine 已做空值保护
     locations: z.array(z.object({
       name: z.string(),
       region: z.string(),
       danger_level: DangerLevel,
       description: z.string(),
-      power_distribution: z.string(),
-      level_range: z.string(),
-      rules: z.string(),
       peace_orno: PeaceLevel,
-      inhabitants: z.array(z.string()),
-      bound_items: z.array(z.string()),
-      bound_locations: z.array(z.string()),
+      power_distribution: z.string().optional(),
+      level_range: z.string().optional(),
+      rules: z.string().optional(),
+      inhabitants: z.array(z.string()).optional(),
+      bound_items: z.array(z.string()).optional(),
+      bound_locations: z.array(z.string()).optional(),
     })),
   }),
 )

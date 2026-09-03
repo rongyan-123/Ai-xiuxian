@@ -1,61 +1,43 @@
-上次对话记录 — 2026-07-23（Session 6 — Agent框架架构头脑风暴）
+上次对话记录 — 2026-07-31（Session 7 — 两 Bug 修复 + 项目评估 + Phase C 收尾）
 ================================================================================
 
 【本轮任务】
-用户发现当前项目只是简单function calling（4节点线性LangGraph），决定完全重写为正式Agent框架。
-参考：Codex/Claude Code生命周期、StudyHeaven教学Agent、LLM Wiki、GTA V/RDR2/觅长生。
+1. 测试网站时发现两个 bug：切换面板导致 SSE 流中断（"Stream read cancelled"）；图鉴出现重复"新手村"条目
+2. 用户要求理解 AI 决策链，评估项目上线进度，随后批准修复
 
-【架构设计完成模块（14节，记录在 architecture-brainstorm-log.md）】
+【Bug 1 — 切换面板中断 SSE 流】
+- 根因：page.tsx 条件渲染面板 → 切走时 ChatPanel 卸载 → useGameStream cleanup 调 abort() 杀掉 SSE 连接
+- 修复：ChatPanel 改为始终挂载，CSS display 切换显隐（桌面 + 移动端）
+- 用户观点："切界面它一样会存在的"（面板切换应保持状态/连接存活）
 
-1. 项目诊断 — 当前是固定流程，不是Agent
-2. 核心理念 — Agent = for循环 + 工具调用 + Done Tool + 临时消息
-3. NPC自治分级 — T3(完整Agent)/T2(混合)/T1(模板)/T0(宏观)，脑体分离
-4. 知识气泡 + 世界约束编译 — Region DM生成约束，NPC只感知周围
-5. 动态约束注入 — bound标志 + 概率叛逆(5-10%)
-6. 游戏模式 — 模拟器为主(hardcore)，可选爽文剧情流
-7. 横向时间执行 — 觅长生式，每小时检查点，所有NPC一起推进
-8. Agent循环状态机 — think→act→observe→re-think
-9. 循环修正 — 动态回合预算(simple=3, medium=8, complex=15) + 每步超时
-10. 工具五类定义 — 感知查询/世界行动/NPC行为/叙事输出/UI面板
-11. 完整工具目录 — 25个工具TypeScript接口 + 注册表(tool-catalog.ts)
-12. Region DM协议 — 三款大作调研(GTA V/RDR2/觅长生) + 五条铁律 + 6个职责
-13. 已完成vs待讨论 — 汇总表
+【Bug 2 — 图鉴重复"新手村"】
+- 根因：种子地点只存在于 system prompt 文本（不在玩家 codex），LLM 每次探查都重新调用 GenerateLocation("新手村")，客户端 addCodex 无条件追加
+- 用户关键反馈："在 AI 生成地点之前，就应该去做一个校验"（否决客户端去重方案，要求生成前服务端校验）
+- 修复（TDD）：rule-engine.ts GenerateLocation 分支先查 SEED_LOCATION_NAMES + 已有 codex，命中跳过（记入 skippedLocations）；buildSystemPrompt【叙事之道】新增"已收录地点直接引用不重新生成"规则
+- 5 个新单元测试：种子地点跳过 / 已有地点跳过 / 新地点添加 / 混合场景
 
-【关键设计决策】
-- LLM是叙述者，不是世界创造者（World Authority Principle）
-- 工具结果ephemeral=本轮，回合结束即抛弃
-- NPC不能直接写世界（不能调世界行动工具）
-- Region DM每天2次LLM调用（约束+事件），不是每个NPC都调
-- 五级优先级中断（P0-P4，纯程序判断）
-- NPC模板化：原型 + 参数变异 = 个体差异
+【项目评估（用户问"离上线还差多少"）】
+- 基础设施 ~85%：Agent Loop、25 工具、世界种子、NPC 三层（模板/决策/Agent）、Region DM、上下文压缩
+- 预计 2-3 周（用 Claude 辅助），主要风险：LLM 试错 + 世界层行为树/记忆流仍空
+- 下一步：Phase D — Agent 调用 Agent（玩家↔NPC 对话闭环）
 
-【已创建文件】
-- docs/architecture-brainstorm-log.md — 14节完整架构设计
-- src/server/contracts/tool-catalog.ts — 25个工具TypeScript定义
-- docs/开发计划-Agent框架重写.md — 7阶段开发计划
-
-【已修改文件】
-- src/server/contracts/index.ts — 添加 tool-catalog 导出
-- CLAUDE.md — 添加"架构头脑风暴日志"强制规则（最高优先级）
-
-【下一轮待讨论】
-1. Region DM完整协议（输入/输出格式、调度时序）
-2. 上下文压缩（几百回合后对话历史处理）
-3. 双模型架构（快速模型做判断 + 强力模型做叙事）
-4. 前端Agent可视化（玩家看到什么）
-5. 竖切实验（最短闭环验证架构可行性）
+【修复验证结果】
+- type check：工作区 19 错误全部为历史遗留（基线对比确认零新增）；顺手修掉 npc-tick.test.ts 缺 beforeAll import
+- vitest 948 用例：945 绿，3 失败（fault-injection SSE 契约测试，基线同样失败 = 预先存在）
+- 数据库（Docker PostgreSQL 5433）未启动导致集成测试失败 → 启动 Docker + prisma db push 修复
+- 真实 LLM e2e 验证脚本 e2e/bugfix-verify.spec.ts：完整流程验证两 bug（结果见会话）
 
 【用户消息摘要】
-- "当前项目只是function calling，需要重写为正式Agent框架"
-- "B方案不行，token消耗巨量"（反对每个NPC都跑LLM）
-- "NPC不能纯状态机，不然太死了"（需要LLM做决策）
-- "约束要动态加入变量，有规则破坏者才有趣"
-- "模拟器模式为主，难度可选"
-- "agent循环参考claude/codex/pi-agent"
-- 三次循环修正：逻辑问题(先查询后描述)、预算问题(动态)、超时问题(每步)
-- "玩家本质不操作工具，单纯语言输入"
-- "先把工具目录模块做完"
-- "参考觅长生/GTA5/大镖客的游戏界NPC设计"
-- "记到日志，写开发计划txt，明天再聊"
+- "我进去聊两句看看"（开始测试）
+- "Stream read cancelled / 切到图鉴再切回来它就断了"
+- "为什么会有两个一样的新手图呢？探查的时候突然又自己加了一个"
+- "在AI生成地点之前，就应该去做一个校验"（修复方向的关键纠正）
+- "当前这个AI到底是怎么决策的呢？"（要求解释 AI 决策链）
+- "项目做到什么程度了？离上线还差多少？多少天？"（项目评估）
+- "可以，开始修吧。顺便记得读取一下日志，还有一些记一下日志。"
 
+【待办/下一轮】
+- git commit（Phase C NPC 系列 + 本次两 bug 修复尚未提交，工作区脏）
+- 3 个预先存在的 fault-injection SSE 契约测试失败待排查
+- Phase D：Agent 调用 Agent（玩家→NPC 对话闭环）
 ================================================================================

@@ -42,7 +42,6 @@ export function ChatPanel() {
   const setPendingInput = useGameStore((s) => s.setPendingInput)
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const [poemIndex, setPoemIndex] = useState(0);
 
   // ── useGameStream — 集中 SSE 处理 ──────────────────────────────────────
@@ -73,9 +72,11 @@ export function ChatPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStreaming]);
 
-  // Auto-scroll to bottom
+  // Auto-scroll to bottom（直接设置 scrollTop，smooth 动画会被高频 delta 插入打断）
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
   }, [chatHistory, stepLogs, streamingText]);
 
   // 重置步骤日志和诗歌（开始新的流）
@@ -172,7 +173,7 @@ export function ChatPanel() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950">
+    <div className="flex flex-col flex-1 min-h-0 bg-zinc-950">
       <div className="px-4 py-2.5 md:py-4 border-b border-zinc-800 safe-area-top">
         <h2 className="text-sm md:text-lg font-semibold text-zinc-200 font-chinese">
           天机推演
@@ -317,7 +318,6 @@ export function ChatPanel() {
             </motion.div>
           )}
 
-          <div ref={bottomRef} />
         </div>
       </div>
 

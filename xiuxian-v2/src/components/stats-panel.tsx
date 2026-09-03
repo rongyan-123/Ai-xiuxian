@@ -3,17 +3,8 @@
 
 import { useGameStore } from '@/stores/game'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, Heart, Droplets, Wind, Shield, Brain, Star, Swords } from 'lucide-react'
-
-function Bar({current, max, color}: {current: number; max: number; color: string}) {
-  const pct = max > 0 ? Math.min(100, (current / max) * 100) : 0
-  const isLow = pct < 30
-  return (
-    <div className="w-full h-2 rounded-full bg-zinc-800 overflow-hidden">
-      <div className={"h-full rounded-full transition-all duration-500 " + (isLow ? 'bg-red-500 animate-pulse' : color)} style={{width: pct + '%'}} />
-    </div>
-  )
-}
+import { ArrowLeft, Heart, Droplets, Wind, Shield, Brain, Star, Timer } from 'lucide-react'
+import { hpStatus, mpStatus, ageStatus } from '@/lib/utils'
 
 export function StatsDetailPanel() {
   const { setCurrentView, player } = useGameStore()
@@ -37,19 +28,19 @@ export function StatsDetailPanel() {
         <h2 className="text-lg font-semibold text-zinc-200 font-chinese">详细属性</h2>
       </div>
       <div className="flex-1 p-4 overflow-auto space-y-5">
-        {/* Core Bars */}
-        <div className="space-y-3">
-          <div>
-            <div className="flex justify-between text-xs mb-1"><span className="text-emerald-400 flex items-center gap-1"><Heart className="h-3 w-3" />气血</span><span className="text-zinc-300">{hp.current}/{hp.max}</span></div>
-            <Bar current={hp.current} max={hp.max} color="bg-emerald-500" />
+        {/* 状态描述（叙事化，替代数值进度条） */}
+        <div className="grid grid-cols-3 gap-2">
+          <div className="p-2 rounded-lg bg-zinc-900 border border-zinc-800">
+            <div className="text-[10px] text-zinc-500 flex items-center gap-1"><Heart className="h-3 w-3 text-emerald-500" />气血</div>
+            <div className="text-sm font-medium text-zinc-200 mt-0.5">{hpStatus(hp)}</div>
           </div>
-          <div>
-            <div className="flex justify-between text-xs mb-1"><span className="text-blue-400 flex items-center gap-1"><Droplets className="h-3 w-3" />灵力</span><span className="text-zinc-300">{mp.current}/{mp.max}</span></div>
-            <Bar current={mp.current} max={mp.max} color="bg-blue-500" />
+          <div className="p-2 rounded-lg bg-zinc-900 border border-zinc-800">
+            <div className="text-[10px] text-zinc-500 flex items-center gap-1"><Droplets className="h-3 w-3 text-blue-500" />灵力</div>
+            <div className="text-sm font-medium text-zinc-200 mt-0.5">{mpStatus(mp)}</div>
           </div>
-          <div>
-            <div className="flex justify-between text-xs mb-1"><span className="text-amber-400 flex items-center gap-1"><Star className="h-3 w-3" />寿元</span><span className="text-zinc-300">{age.current}/{age.max}年</span></div>
-            <Bar current={age.current} max={age.max} color="bg-amber-500" />
+          <div className="p-2 rounded-lg bg-zinc-900 border border-zinc-800">
+            <div className="text-[10px] text-zinc-500 flex items-center gap-1"><Timer className="h-3 w-3 text-amber-500" />寿元</div>
+            <div className="text-sm font-medium text-zinc-200 mt-0.5">{ageStatus(age)}</div>
           </div>
         </div>
 

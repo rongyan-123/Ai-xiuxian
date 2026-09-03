@@ -300,6 +300,11 @@ src/server/streaming/
 
 src/server/domain/
   └─ 纯领域规则引擎（无副作用，依赖注入 now/random）
+  └─ game-start.ts # 固定开局模板（穷散修初始背包/开场叙事；图鉴已清空，由世界生成填充）
+  └─ world-gen.ts  # 世界生成系统：固定底层规则（WORLD_RULES 苍元大陆四域+正道七宗魔道三脉散修盟）
+                      → LLM 调 GenerateLocation/Sect/Npc/AddCodexEntry 填充具体内容
+                      → 存入 codex。首次 action 触发一次（needsWorldGenesis），
+                      补全轮（needsGenesisCompletion）+ 固定模板兜底（buildFallbackWorld/buildFallbackBackground）。
 
 src/server/infrastructure/
   └─ 仓储端口 + Prisma/Fake 适配器 + LLM/RAG/重试适配器
@@ -342,4 +347,12 @@ src/server/contracts/tool-catalog.ts ★工具目录（TypeScript）★
      扩展机制：metadata?: Record<string, unknown>
 
 ================================================================================
-最后更新：2026-07-23
+十二、Bug 修复验证（2026-07-31 新增）
+================================================================================
+
+e2e/bugfix-verify.spec.ts ★Bug修复e2e验证★
+  └─ 真实LLM完整流程：验证面板切换不中断SSE流（CSS隐藏保持挂载）
+     和 GenerateLocation 生成前校验（图鉴不重复新手村）
+
+================================================================================
+最后更新：2026-07-31

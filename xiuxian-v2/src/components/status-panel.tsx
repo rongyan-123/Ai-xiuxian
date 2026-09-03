@@ -3,9 +3,8 @@
 
 import { useGameStore } from '@/stores/game'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Progress } from '@/components/ui/progress'
-import { Heart, Droplets, Timer, Swords, User, Gem, MapPin, Users, Clock } from 'lucide-react'
-import { formatWorldTime } from '@/lib/utils'
+import { Heart, Droplets, Timer, User, MapPin, Users, Clock } from 'lucide-react'
+import { formatWorldTime, hpStatus, mpStatus, ageStatus } from '@/lib/utils'
 
 const GRADE_DOT: Record<string, string> = {
   '天': 'bg-amber-400', '地': 'bg-emerald-400',
@@ -31,13 +30,7 @@ export function StatusPanel() {
   const age = stats.age || { current: 16, max: 100 }
   const spirit = stats.spirit || { value: 0, desc: 'unknown' }
 
-  const hpPercent = hp.max > 0 ? (hp.current / hp.max) * 100 : 0
-  const mpPercent = mp.max > 0 ? (mp.current / mp.max) * 100 : 0
-  const agePercent = age.max > 0 ? (age.current / age.max) * 100 : 0
-  const isLowHp = hpPercent < 30
-  const isDying = agePercent < 10
-
-  const currentLocation: string = (player as any).currentLocation || '新手村'
+  const currentLocation: string = (player as any).currentLocation || '出生山村'
   const npcs: any[] = (player as any).npcs || []
   const npcsHere = npcs.filter((n: any) => n.currentLocation === currentLocation)
   const codex: any[] = (player as any).codex || []
@@ -65,27 +58,27 @@ export function StatusPanel() {
               </div>
             </div>
           </div>
-          <div className="space-y-4">
-            <div className="space-y-1">
-              <div className="flex justify-between text-xs">
-                <span className="text-zinc-400 flex items-center gap-1"><Heart className={isLowHp ? 'h-3 w-3 text-red-500 animate-pulse' : 'h-3 w-3 text-emerald-500'} />气血</span>
-                <span className={isLowHp ? 'text-red-500 font-bold' : 'text-zinc-300'}>{hp.current}/{hp.max}</span>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-zinc-900 border border-zinc-800">
+              <Heart className="h-4 w-4 text-emerald-500 flex-shrink-0" />
+              <div className="min-w-0">
+                <div className="text-[10px] text-zinc-500">气血</div>
+                <div className="text-xs font-medium text-zinc-200 truncate">{hpStatus(hp)}</div>
               </div>
-              <Progress value={hpPercent} className={isLowHp ? 'h-2 bg-red-900/50 [&>div]:bg-red-500 [&>div]:animate-pulse' : 'h-2 bg-zinc-800 [&>div]:bg-emerald-500'} />
             </div>
-            <div className="space-y-1">
-              <div className="flex justify-between text-xs">
-                <span className="text-zinc-400 flex items-center gap-1"><Droplets className="h-3 w-3 text-blue-500" />灵力</span>
-                <span className="text-zinc-300">{mp.current}/{mp.max}</span>
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-zinc-900 border border-zinc-800">
+              <Droplets className="h-4 w-4 text-blue-500 flex-shrink-0" />
+              <div className="min-w-0">
+                <div className="text-[10px] text-zinc-500">灵力</div>
+                <div className="text-xs font-medium text-zinc-200 truncate">{mpStatus(mp)}</div>
               </div>
-              <Progress value={mpPercent} className="h-2 bg-zinc-800 [&>div]:bg-blue-500" />
             </div>
-            <div className="space-y-1">
-              <div className="flex justify-between text-xs">
-                <span className="text-zinc-400 flex items-center gap-1"><Timer className={isDying ? 'h-3 w-3 text-red-500 animate-pulse' : 'h-3 w-3 text-amber-500'} />寿元</span>
-                <span className={isDying ? 'text-red-500 font-bold animate-pulse' : 'text-zinc-300'}>{age.current}/{age.max}年</span>
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-zinc-900 border border-zinc-800">
+              <Timer className="h-4 w-4 text-amber-500 flex-shrink-0" />
+              <div className="min-w-0">
+                <div className="text-[10px] text-zinc-500">寿元</div>
+                <div className="text-xs font-medium text-zinc-200 truncate">{ageStatus(age)}</div>
               </div>
-              <Progress value={agePercent} className={isDying ? 'h-2 bg-red-900/50 [&>div]:bg-red-500 [&>div]:animate-pulse' : 'h-2 bg-zinc-800 [&>div]:bg-amber-500'} />
             </div>
           </div>
           {/* 游戏时间 */}

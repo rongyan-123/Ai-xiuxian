@@ -160,6 +160,34 @@ describe('processRuleEngine — characterization tests (production import)', () 
       expect(r.inventory).toEqual([])
       expect(r.deltas.addedItems).toBeUndefined()
     })
+
+    it('fills missing value with 0 (LLM may omit it, must not break PlayerSnapshotSchema)', () => {
+      const r = run([
+        { name: 'Backpack_additems', args: { items: [{ name: '神秘丹', count: 1 }] } },
+      ])
+      expect(r.inventory[0].value).toBe(0)
+    })
+
+    it('fills missing count/grade/type/description with defaults', () => {
+      const r = run([
+        { name: 'Backpack_additems', args: { items: [{ name: '无名之物' }] } },
+      ])
+      expect(r.inventory[0]).toMatchObject({
+        count: 1,
+        grade: '无',
+        type: '杂物',
+        description: '',
+        value: 0,
+      })
+    })
+
+    it('defaults count to 1 when merging with existing item', () => {
+      const inv = [{ id: 'x1', name: '灵石', grade: '黄阶下品' as const, type: 'currency', description: '货币', count: 3, value: 1 }]
+      const r = run([
+        { name: 'Backpack_additems', args: { items: [{ name: '灵石' }] } },
+      ], baseStats(), inv)
+      expect(r.inventory[0].count).toBe(4)
+    })
   })
 
   // ── Backpack_reduceitems / Consume_Item ─────────────────────────────────
@@ -497,6 +525,43 @@ describe('processRuleEngine — characterization tests (production import)', () 
       expect(r.codex).toHaveLength(1)
       expect(r.codex[0].name).toBe('修仙入门')
       expect(r.deltas.codex).toBeDefined()
+    })
+
+    // ── 生成前校验：种子数据/已有codex中的地点不允许重复生成 ─────────────
+
+    it('Generate_Location 种子已存在的地点（新手村）→ 不新增条目', () => {
+      const r = run([{ name: 'Generate_Location', args: { locations: [{ name: '新手村', description: 'LLM臆想的重复描述', region: '南域' }] } }])
+      expect(r.codex).toHaveLength(0)
+    })
+
+    it('Generate_Location 种子已存在的地点（青云坊市）→ 不新增条目', () => {
+      const r = run([{ name: 'Generate_Location', args: { locations: [{ name: '青云坊市', description: '重复生成', region: '南域' }] } }])
+      expect(r.codex).toHaveLength(0)
+    })
+
+    it('Generate_Location 已有codex中的同名地点 → 不新增条目', () => {
+      const existing = [{ id: 'cv-1', name: '落霞峰', entry_type: 'location', description: '已收录', timestamp: 0 }]
+      const r = run(
+        [{ name: 'Generate_Location', args: { locations: [{ name: '落霞峰', description: '再次生成' }] } }],
+        baseStats(), [], existing,
+      )
+      expect(r.codex).toHaveLength(1)
+      expect(r.codex[0].description).toBe('已收录')
+    })
+
+    it('Generate_Location 非种子新地点 → 正常新增', () => {
+      const r = run([{ name: 'Generate_Location', args: { locations: [{ name: '无名的荒谷', description: '全新地点', region: '南域' }] } }])
+      expect(r.codex).toHaveLength(1)
+      expect(r.codex[0].name).toBe('无名的荒谷')
+    })
+
+    it('Generate_Location 混合调用：种子地点跳过 + 新地点新增', () => {
+      const r = run([{ name: 'Generate_Location', args: { locations: [
+        { name: '新手村', description: '重复' },
+        { name: '碧水潭', description: '全新地点' },
+      ] } }])
+      expect(r.codex).toHaveLength(1)
+      expect(r.codex[0].name).toBe('碧水潭')
     })
   })
 

@@ -152,6 +152,186 @@ NPC的LLM调用只接收：
    - 热/温/冷三层记忆的持久化方案
    - 跨会话记忆（玩家退出后再回来，NPC还记得他）
 
+---
+
+## 七、NPC Agent 架构探索（第2轮，2026-07-25）
+
+### 用户愿景（ffffyuan）
+
+> 让玩家接触到的每一个NPC都成为一个单独的个体，跟玩家一样的个体。他会看当前情况，会做选择——战斗、逃跑、观察环境。NPC自己也会调用工具，甚至可能Agent调用Agent。
+
+核心理念：**NPC = 跟玩家平级的参与者**，不是舞台道具。
+
+### 业界研究结论
+
+#### 1. Generative Agents (Stanford/Google, 2023) — 已证实可行但极贵
+
+Smallville 实验：25个AI Agent在沙盒小镇里自由生活2天。四个核心模块：
+- **Memory Stream**：所有经历存为自然语言记忆
+- **Retrieval**：三维度加权取回（时间衰减 + 重要度打分 + 语义相关性）
+- **Reflection**：定期从低级观察到高级抽象（"Klaus在认真研究gentrification"）
+- **Planning**：递归分解日计划（8小时块 → 5-15分钟动作）
+
+**结果**：信息扩散（选举消息从1人传到8人）、关系记忆（几天后记得别人的事）、自组织协调（12人被邀请派对，5人到场，没有中央协调）。
+
+**致命问题**：25个Agent × GPT-3.5 = 海量调用。不适合生产游戏。
+
+#### 2. CASCADE (ACM 2026) — "不要给每个NPC都装LLM"
+
+三层协调架构：
+- **Macro State Director**：离散时间世界状态 + 全局事件触发（如"旱灾"）
+- **Coordination Hub**：按NPC标签路由指令
+- **Tag-Driven NPCs**：行为树 + 本地效用函数执行，LLM只用于玩家对话
+
+**核心论点**：中心设计问题不是"如何让每个NPC更聪明"，而是"如何在可扩展、可驾驭、可解释的层面组织社会行为"。
+
+#### 3. 游戏工业三件套：BT + GOAP + Utility AI
+
+2024-2025年共识是**分层混合**：
+
+```
+效用AI（Utility）  →  决定"现在该干什么"（战斗？逃跑？交易？）
+    ↓ 选出最高分动作
+GOAP规划器        →  决定"怎么干"（动态组合动作序列）
+    ↓ 产出执行计划
+行为树（BT）      →  执行具体动作（走到位置→播放动画→产出结果）
+    ↓
+感知系统          →  喂给所有层（看到谁了？听到什么了？）
+```
+
+- **Behavior Tree**：最广泛使用的执行层，清晰可调试，Unreal/Unity原生支持
+- **GOAP**：F.E.A.R.首创，NPC动态拼动作链达成目标。Kingdom Come: Deliverance 2在用
+- **Utility AI**：Guild Wars 2用它在MMO中处理数百个NPC战斗AI。连续评分避免状态机锁死
+
+#### 4. 2025年LLM+NPC前沿方案
+
+| 方案 | 核心思路 | 成本 |
+|------|---------|------|
+| **Multi-LoRA** | 一个基础模型 + 多个轻量适配器，ToolLoRA判断要不要调工具，PersonaLoRA生成对话 | L40S单卡，<30GB VRAM |
+| **AI Commander** | DeepSeek做战略决策，Unity执行 | $0.58/454次调用 |
+| **行为树生成** | LLM离线生成复杂行为树，运行时零LLM成本 | 零运行时成本 |
+| **State-Inference Prompting** | 先推断NPC该知道什么再生成回复，97%状态合规率 | 正常LLM调用 |
+
+### 推荐架构：NPC Agent = 决策层（Utility）+ 叙事层（LLM）+ 工具层（共享Tool Catalog）
+
+```
+                    ┌─────────────────────────┐
+                    │    感知系统（Perception）  │
+                    │  看到谁/听到什么/位置信息   │
+                    └───────────┬─────────────┘
+                                │
+                    ┌───────────▼─────────────┐
+                    │   效用评分（Utility AI）   │  ← 纯计算，零LLM成本
+                    │  用NPC的6个参数+当前状态    │
+                    │  对所有可选动作打分          │
+                    │  greed高→倾向讨价还价       │
+                    │  courage低→倾向逃跑         │
+                    │  anger高→倾向动手           │
+                    └───────────┬─────────────┘
+                                │ 选出最高分动作
+                    ┌───────────▼─────────────┐
+                    │   动作分派（Dispatch）     │
+                    │                           │
+                    │  简单动作 → 直接执行        │
+                    │  复杂动作 → 唤醒LLM Agent   │
+                    └─────┬──────────┬──────────┘
+                          │          │
+              ┌───────────▼──┐  ┌───▼──────────────┐
+              │  直接执行     │  │  NPC Agent Loop   │
+              │  (状态机/BT)  │  │  (简化版Agent循环) │
+              │              │  │                   │
+              │  巡逻/站岗    │  │  组装上下文        │
+              │  移动/买卖    │  │  → LLM决策        │
+              │  休息/吃饭    │  │  → 调工具（战斗/   │
+              │              │  │    逃跑/探索/对话）│
+              │              │  │  → 观察结果        │
+              │              │  │  → 产出叙事        │
+              └──────────────┘  └───────────────────┘
+```
+
+### 关键设计决策
+
+#### 决策1：NPC什么时候唤醒LLM？
+
+不是每帧、不是每秒、甚至不是每分钟。LLM只在**决策点**唤醒：
+- 玩家主动与NPC交互（对话/交易/切磋）
+- NPC遇到意外事件（看到打斗/发现宝物/被攻击）
+- 每日规划时刻（早上决定今天的计划）
+- 情感阈值突破（愤怒值爆了/恐惧值爆了）
+
+其他所有日常行为（走路、站岗、扫地、炼丹）都是状态机/行为树自动执行。
+
+#### 决策2：NPC的工具目录
+
+NPC跟玩家/GM共享同一套工具，但按Tier过滤：
+
+| Tier | 可用工具 |
+|------|---------|
+| T1 | 无工具（纯模板对话） |
+| T2 | Explore、LookAround、ChangeLocation、Greet、Trade |
+| T3 | 全部工具（包括GenerateNPC、ModifyStats、Fight等） |
+
+T3长老可以自己生成新NPC（收徒）、修改属性（赐丹）、甚至攻打别的宗门。这就是"NPC是跟玩家一样的个体"。
+
+#### 决策3：Agent调用Agent
+
+当NPC需要做复杂操作时（如"去暗雾森林探索"），NPC的Agent Loop可以：
+1. 创建一个子Agent（带目标"探索暗雾森林"）
+2. 子Agent自己走 GUARD→THINK→ACT→SAVE 循环
+3. 子Agent返回探索结果（发现了什么/遇到了什么）
+4. 主NPC Agent把结果写入记忆流
+
+这跟玩家Agent的逻辑一模一样——只是调用者是NPC而非玩家。
+
+#### 决策4：成本控制（关键）
+
+| 场景 | 今天的方法 | 新方法 |
+|------|-----------|--------|
+| NPC日常行为 | ❌ 无 | 状态机自动跑，零成本 |
+| NPC做简单决定 | ❌ 无 | Utility AI评分，零成本 |
+| 玩家跟NPC对话 | GM扮演NPC | NPC自己LLM对话（带完整个人上下文） |
+| NPC遭遇突发事件 | ❌ 无法处理 | NPC Agent Loop决策 |
+| NPC日常规划 | ❌ 无 | 早上1次LLM调用生成日计划 |
+
+预估成本：一个10个NPC的区域，玩家玩1小时 → 10-20次LLM调用（主要是对话和事件响应）。
+
+### 与现有系统的关系
+
+- **npc-archetype.ts** 的6个参数 → 直接喂给Utility AI做评分
+- **region-dm.ts** 的约束绑定 → 注入NPC Agent的上下文
+- **knowledge-bubble.ts** → 喂给NPC的感知系统
+- **agent-loop.ts** → T3 NPC复用同一个Agent循环（参数化调用者身份：player vs NPC）
+
+### 实现路线
+
+**Phase A：决策层（Utility AI）**
+- NPC动作池定义（巡逻、交易、战斗、逃跑、对话、探索……）
+- 效用评分函数：score(action, npcParams, situation) → 0~1
+- 动作分派：简单→状态机，复杂→LLM
+
+**Phase B：NPC Agent Loop**
+- 复用现有agent-loop，参数化调用者身份
+- NPC工具目录过滤
+- NPC上下文组装（约束+本地+个人+记忆）
+
+**Phase C：横向时间 + 批量NPC tick**
+- 玩家行动消耗时间
+- 同区域NPC统一推进
+- NPC行为产生事件 → 事件进入知识气泡
+
+**Phase D：Agent调用Agent**
+- NPC可创建子Agent处理复杂任务
+- 异步执行，结果写入记忆流
+
+### 参考来源
+- [Generative Agents: Interactive Simulacra of Human Behavior](https://arxiv.org/abs/2304.03442) (Park et al., 2023)
+- [CASCADE: A Cascading Architecture for Social Coordination](https://dl.acm.org/doi/full/10.1145/3772363.3798700) (ACM, 2026)
+- [GOAP in Game AI](https://tonogameconsultants.com/goap/) (Tono Game Consultants, 2025)
+- [Infinite Axis Utility Systems](https://tonogameconsultants.com/infinite-axis-utility-systems/) (Tono, 2025)
+- [Enhancing Game AI Behaviors with LLMs and Agentic AI](https://dl.acm.org/doi/abs/10.1145/3696630.3728553) (Paduraru et al., FSE 2025)
+- [Efficient Tool-Calling Multi-Expert NPC Agent](https://ar5iv.labs.arxiv.org/html/2511.01720) (CPDC 2025)
+- Aalto University "The Mind and the Body" (brain-body separation for game NPCs)
+
 5. 多Agent协调：
    - T3 NPC之间如何形成一致叙事
    - 冲突检测（NPC A的LLM行为不能和NPC B的LLM行为矛盾）

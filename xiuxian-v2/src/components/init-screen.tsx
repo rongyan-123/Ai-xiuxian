@@ -3,58 +3,29 @@
 
 import { useState } from 'react'
 import { useGameStore } from '@/stores/game'
+import { createStartingPlayer, buildOpeningNarrative } from '@/server/domain/game-start'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { motion } from 'framer-motion'
 
 export function InitScreen() {
-  const { setPhase, setPlayer, player } = useGameStore()
+  const { setPhase, setPlayer, addMessage, player } = useGameStore()
   const [name, setName] = useState('')
   const [gender, setGender] = useState('男')
-  // active removed
 
-  const handleStart = async () => {
+  const handleStart = () => {
     if (!name.trim()) return
-    setPlayer({
-      id: player?.id || String(Date.now()),
-      status: 'ALIVE',
-      name: name,
-      gender: gender,
-      stats: {
-        hp: { current: 100, max: 100, status_desc: '良好' },
-        mp: { current: 50, max: 50, status_desc: '充沛' },
-        spirit: { value: 100, desc: '精神饱满' },
-        realm: '练气期一层',
-        age: { current: 16, max: 100 },
-        race: '人族',
-        alignment: '中立',
-        sect: '散修',
-        spiritual_root: '五行杂灵根',
-        mental_state: '心如止水',
-        reputation: 0,
-        emotion: '平静',
-        state_of_mind: 80,
-        fortune: 50,
-        karma: 0,
-        techniques: { main: '基础吐纳', combat: [], movement: '步行', support: [] },
-        shield: { current: 0, max: 50 },
-        talents: [],
-        traits: [],
-      },
-      inventory: [],
-      codex: [],
-      relationships: {},
-      situations: [],
-      foreshadowings: [],
-      worldTime: Date.now(),
-      currentLocation: '新手村',
-      npcs: [],
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      version: 0,
+    const now = Date.now()
+    // 固定开局模板：不调 LLM，直接进入 PLAYING（开局只是入场仪式，动态世界才是核心）
+    setPlayer(createStartingPlayer({ id: player?.id || String(now), name, gender, now }))
+    addMessage({
+      id: `opening-${now}`,
+      role: 'assistant',
+      content: buildOpeningNarrative(name),
+      timestamp: now,
     })
-    setPhase('SELECT')
+    setPhase('PLAYING')
   }
 
   return (

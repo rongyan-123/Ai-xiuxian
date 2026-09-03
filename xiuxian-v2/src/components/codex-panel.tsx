@@ -16,7 +16,7 @@ const TYPE_TABS = [
 ]
 
 const TYPE_LABELS: Record<string, string> = {
-  npc: "人物", location: "地点", item: "物品", sect: "宗门",
+  npc: "人物", location: "地点", item: "物品", sect: "宗门", background: "身世",
 }
 
 function MetadataSection({ entry }: { entry: any }) {

@@ -9,6 +9,7 @@
  */
 import { NextResponse } from 'next/server'
 import { executeGameTurn } from '@/server/application/execute-game-turn'
+import { STARTING_INVENTORY, STARTING_CODEX } from '@/server/domain/game-start'
 import type { GameTurnRequest } from '@/server/application/execute-game-turn'
 import { GameActionRequestSchema } from '@/server/contracts/game-action'
 import { createFakeClock, createIdGenerator } from '@/server/infrastructure/adapters'
@@ -243,13 +244,13 @@ export async function POST(req: Request): Promise<Response> {
                   talents: [],
                   traits: [],
                 },
-                inventory: [],
-                codex: [],
+                inventory: STARTING_INVENTORY.map((i) => ({ ...i })),
+                codex: STARTING_CODEX.map((c) => ({ ...c, metadata: { ...c.metadata }, timestamp: Date.now() })),
                 relationships: {},
                 situations: [],
                 foreshadowings: [],
                 worldTime: BigInt(Date.now()),
-                currentLocation: '新手村',
+                currentLocation: '出生山村',
                 npcs: [],
                 createdAt: new Date(),
                 updatedAt: new Date(),
@@ -297,13 +298,13 @@ export async function POST(req: Request): Promise<Response> {
               talents: [],
               traits: [],
             },
-            inventory: [],
-            codex: [],
+            inventory: STARTING_INVENTORY.map((i) => ({ ...i })),
+            codex: STARTING_CODEX.map((c) => ({ ...c, metadata: { ...c.metadata }, timestamp: Date.now() })),
             relationships: {},
             situations: [],
             foreshadowings: [],
             worldTime: Date.now(),
-            currentLocation: '新手村',
+            currentLocation: '出生山村',
             npcs: [],
             createdAt: Date.now(),
             updatedAt: Date.now(),

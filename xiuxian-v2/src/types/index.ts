@@ -22,6 +22,8 @@ export interface T1Npc {
   knowledge?: KnowledgeRecord[]
   /** 特性参数（可选，影响行为） */
   traits?: Record<string, number>
+  /** 原型ID（可选，用于决策和行为查询） */
+  archetype?: string
 }
 
 export interface NpcScheduleSlot {

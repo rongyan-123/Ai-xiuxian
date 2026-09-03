@@ -12,6 +12,10 @@
 import type { ICharacterStats, IInventoryItem, Situation, Foreshadowing, T1Npc } from '@/types'
 import { createT1Npc, getNpcsAtLocation } from './npc-engine'
 import { getActiveNpcsAtLocation, formatNpcPresence } from './npc-activity'
+import { SEED_LOCATIONS } from './world-seed'
+
+// 种子数据中已定义的地点名 — LLM不得重复生成（世界是预种子的，AI不能创造已有之物）
+const SEED_LOCATION_NAMES = new Set(SEED_LOCATIONS.map((l) => l.name))
 
 export interface RuleEngineResult {
   stats: ICharacterStats
@@ -123,6 +127,29 @@ function generateItemId(now: () => number, random: () => string): string {
   return `${now().toString()}-${random()}`
 }
 
+/**
+ * 补全 LLM 可能漏传的物品字段（value/description/grade/type/count），
+ * 保证形状满足 PlayerSnapshotSchema 校验——缺 value 会炸 SSE 流
+ * （"Invalid SSE event: payload.player.inventory.0.value"）。
+ */
+function normalizeItem(
+  item: Record<string, unknown>,
+  now: () => number,
+  random: () => string,
+): IInventoryItem {
+  return {
+    ...item,
+    id: (item.id as string) || generateItemId(now, random),
+    name: (item.name as string) || '未知名物品',
+    grade: (item.grade as IInventoryItem['grade']) || '无',
+    type: (item.type as string) || '杂物',
+    description: (item.description as string) || '',
+    count: typeof item.count === 'number' ? item.count : 1,
+    value: typeof item.value === 'number' ? item.value : 0,
+    // HACK: 类型强转绕过IInventoryItem严格校验，运行时形状无法静态保证，由本函数统一补全。2026-07-31
+  } as unknown as IInventoryItem
+}
+
 /** Matches original: prefix + Date.now().toString(36) + Math.random().toString(36).substr(2, 5) */
 function generateCodexId(prefix: string, now: () => number, random: () => string): string {
   return `${prefix}-${now().toString(36)}${random()}`
@@ -194,13 +221,9 @@ function evaluateToolCall(
       for (const item of items) {
         const existing = newInventory.find((i) => i.name === item.name)
         if (existing) {
-          existing.count += (item.count as number)
+          existing.count += typeof item.count === 'number' ? item.count : 1
         } else {
-          newInventory.push({
-            ...item,
-            id: (item.id as string) || generateItemId(now, random),
-          // HACK: as unknown as 类型强转绕过IInventoryItem严格校验，因Prisma schema的inventory字段为Json类型，运行时形状无法静态保证。Phase 2引入Zod runtime校验后移除。2026-07-24
-          } as unknown as IInventoryItem)
+          newInventory.push(normalizeItem(item, now, random))
         }
       }
       deltas.addedItems = items
@@ -385,6 +408,15 @@ function evaluateToolCall(
   if (canonical === 'GenerateLocation' && (args.locations || args.location)) {
     const locs = (args.locations || [args.location]) as Array<Record<string, unknown>>
     for (const loc of locs) {
+      const locName = loc.name as string
+      // 生成前校验：种子已定义或图鉴已收录的地点不允许重复生成
+      const alreadyKnown =
+        SEED_LOCATION_NAMES.has(locName) ||
+        newCodex.some((e) => e.name === locName && e.entry_type === 'location')
+      if (alreadyKnown) {
+        deltas.skippedLocations = [...((deltas.skippedLocations as string[]) ?? []), locName]
+        continue
+      }
       const parts = [loc.description as string]
       if (loc.danger_level) parts.push(`[${loc.danger_level}]`)
       if (loc.region) parts.push(`位于${loc.region}`)
